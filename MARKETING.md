@@ -2,17 +2,63 @@
 
 ## Core Positioning
 
-### The Pain Point (Crystal Clear)
-> "Claude Code is powerful but blind to the live web. You can't ask it to check real prices, navigate dashboards, or research across dynamic sites."
+### The Problem: Three Gaps in Claude Code
 
-### The Solution (One Sentence)
-> "comet-mcp gives Claude Code a browser that can think, click, and research autonomously."
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Gap 1: WebSearch / Tavily                                   │
+│ → Static results, no interaction                            │
+│ → Can't navigate dashboards, fill forms, click buttons      │
+│ → "How to set up Stripe webhooks" gives articles,           │
+│   but can't show you WHERE to click in the dashboard        │
+└─────────────────────────────────────────────────────────────┘
 
-### Why It's Different (Not 10% Better)
-- Not just another web search tool - it's **agentic browsing**
-- Claude delegates entire research tasks, not just queries
-- Real-time monitoring - watch the AI browse, intervene if needed
-- Perplexity's research engine + Claude's intelligence = unprecedented combo
+┌─────────────────────────────────────────────────────────────┐
+│ Gap 2: Puppeteer MCP                                        │
+│ → Can interact, but Claude writes the browser commands      │
+│ → "click #btn, wait 2s, scroll, find .element..."           │
+│ → Wastes tokens on low-level mechanics                      │
+│ → Claude isn't good at this - it's not a browser expert     │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ Gap 3: No API / No CLI / No MCP                             │
+│ → Stripe dashboard configs, Vercel env vars, OAuth setup    │
+│ → AWS Console, Firebase, GitHub repo settings               │
+│ → These things REQUIRE a browser - no programmatic option   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### The Solution: Agent-to-Agent Delegation
+
+> **comet-mcp** connects Claude Code to Perplexity Comet - enabling **agent-to-agent communication**.
+>
+> Claude just says what it needs. Comet figures out how to get it. Each AI does what it's best at.
+
+```
+Claude Code (Manager)          Comet (Browser Specialist)
+    │                                    │
+    │  "Research Stripe webhook setup"   │
+    ├───────────────────────────────────→│
+    │                                    │ [Navigates docs]
+    │                                    │ [Finds settings page]
+    │                                    │ [Reads instructions]
+    │   Structured results + context     │
+    │←───────────────────────────────────┤
+    │                                    │
+    ▼
+[Uses results in your codebase context]
+```
+
+### Why It's Different
+
+| Approach | What Claude Does | Tokens Wasted | Good At |
+|----------|------------------|---------------|---------|
+| WebSearch/Tavily | Gets static results | Low | Simple lookups |
+| Puppeteer MCP | Writes click/scroll commands | High | Nothing (wrong tool) |
+| **comet-mcp** | Delegates goals to Comet | Low | Complex web tasks |
+
+**The key insight:** Don't make Claude learn browser automation. Let it delegate to an agent that already knows how.
 
 ---
 
@@ -37,30 +83,32 @@
 
 **Title Options (Clear > Clever):**
 ```
-Show HN: comet-mcp – Give Claude Code a browser that browses autonomously
-Show HN: I built an MCP server connecting Claude Code to Perplexity's agentic browser
-Show HN: Claude Code can now browse the web like a human via Perplexity Comet
+Show HN: comet-mcp – Agent-to-agent delegation for Claude Code via Perplexity
+Show HN: I connected Claude Code to Perplexity Comet for things with no API
+Show HN: Let Claude Code delegate browser tasks instead of writing Puppeteer commands
 ```
 
 **Post Body:**
 ```
-I built an MCP server that bridges Claude Code to Perplexity Comet browser.
+I built an MCP server that connects Claude Code to Perplexity Comet browser.
 
-The problem: Claude Code can search the web, but it can't actually browse it.
-It can't log into dashboards, navigate dynamic sites, or do multi-step research.
+The insight: There are three gaps in Claude Code's web capabilities:
 
-The solution: Connect Claude to Perplexity's agentic browser via Chrome DevTools Protocol.
-Now Claude can delegate entire browsing tasks - "go to GitHub trending, find top Python repos" -
-and Comet will navigate, click, scroll, and return results.
+1. WebSearch/Tavily give static results - can't interact with dashboards or forms
+2. Puppeteer MCP makes Claude write click/scroll commands - wastes tokens, Claude isn't good at this
+3. Many things have NO API/CLI - Stripe configs, Vercel env vars, OAuth setup, AWS Console...
 
-What makes it different:
-- Non-blocking: send task, poll for progress, intervene if needed
-- Real browser: handles login walls, dynamic content, JS-heavy sites
-- Perplexity's research: deep analysis with source citations
+The solution: Agent-to-agent delegation.
+
+Claude just says "research how to set up Stripe webhooks" and Comet (Perplexity's agentic browser)
+figures out how to navigate, where to click, what to read. Each AI does what it's best at.
+
+It's like the difference between:
+- Micromanaging: "click here, scroll there, wait for element..." (Puppeteer)
+- Delegating: "figure out how to do X and report back" (comet-mcp)
 
 6 tools: connect, ask, poll, stop, screenshot, mode
-
-Setup: add one JSON block to ~/.claude.json, start Comet with --remote-debugging-port=9222
+Setup: one JSON block in ~/.claude.json + start Comet with --remote-debugging-port=9222
 
 GitHub: https://github.com/hanzili/comet-mcp
 npm: npx comet-mcp
@@ -76,128 +124,122 @@ npm: npx comet-mcp
 
 **r/ClaudeAI** (Primary - 100k+ members, perfect audience)
 
-Title: `I made Claude Code browse the web autonomously using Perplexity Comet`
+Title: `Agent-to-agent: I made Claude Code delegate browser tasks to Perplexity Comet`
 
 ```
-Been using Claude Code for months and the biggest limitation was always live web access.
-WebSearch works for simple queries but can't:
-- Navigate dynamic sites
-- Handle login walls
-- Do multi-step research
-- Interact with web apps
+Been thinking about the gaps in Claude Code's web capabilities:
 
-So I built comet-mcp - connects Claude Code to Perplexity's Comet browser via CDP.
+1. WebSearch/Tavily → static results, can't interact
+2. Puppeteer MCP → Claude has to write click/scroll commands (wastes tokens, it's bad at this)
+3. Many things have NO API → Stripe dashboard, Vercel env vars, OAuth setup...
 
-Example workflow:
-Me: "Research the pricing of Auth0 vs Clerk vs Supabase Auth for a B2B SaaS"
+So I built comet-mcp - connects Claude Code to Perplexity Comet via CDP.
 
-Claude:
-→ Connects to Comet
-→ Delegates the research task
-→ Comet visits each site, navigates pricing pages
-→ Returns structured comparison with sources
+The key idea: agent-to-agent delegation.
 
-The cool part: you can watch Comet browse in real-time and stop it if it goes off track.
+Instead of Claude micromanaging browser commands ("click #btn, wait 2s, scroll..."),
+it just tells Comet what it needs ("figure out how to set up Stripe webhooks").
+Comet handles the browsing. Each AI does what it's best at.
 
-Setup is 2 steps:
-1. Add config to ~/.claude.json
-2. Start Comet with remote debugging
+Example:
+Me: "I need to add auth to my app. Research the current best approach for Next.js"
+
+Claude: [decides it needs current info, delegates to Comet]
+Comet: [navigates docs, GitHub, Reddit - figures out how on its own]
+Claude: [gets results, applies them to my codebase context]
+
+It's like having a smart colleague who handles the browser research
+while you focus on the actual coding.
 
 GitHub: [link]
 npm: `npx comet-mcp`
 
-Would love feedback from other Claude Code users!
+Curious what browser tasks you'd use this for?
 ```
 
 **r/LocalLLaMA** (Technical audience)
-- Focus on the architecture: MCP + CDP bridge
-- Mention it works with any MCP-compatible client
+- Focus on the agent-to-agent architecture
+- MCP + CDP bridge, token efficiency
 
 **r/programming** (Broader reach)
-- More technical, show the code architecture
+- "When there's no API for what you need"
+- The three gaps framing
 
 ### 4. Twitter/X
 
 **Thread Hook Options:**
 ```
-1. "Claude Code is blind to the live web. Here's how I fixed it:"
+1. "Claude Code has 3 gaps for web tasks. I fixed the third one."
 
-2. "I gave Claude Code a browser that thinks.
-   Now it can browse autonomously, research deeply, and report back.
-   Here's the open-source tool (and how to set it up in 2 minutes):"
+2. "WebSearch gives results. Puppeteer needs micromanaging.
+   What about things with no API at all?
 
-3. "The problem with AI coding assistants:
-   They can write code but can't check if the API they're using still exists.
+   I built comet-mcp for agent-to-agent delegation. Thread 🧵"
 
-   I built comet-mcp to fix this. Thread 🧵"
+3. "Stop making Claude write Puppeteer commands.
+   Let it delegate to an agent that actually knows how to browse."
 ```
 
 **Thread Structure (7 tweets):**
 
 Tweet 1 (Hook):
 ```
-Claude Code is powerful but web-blind.
+Claude Code has 3 gaps for web tasks:
 
-It can't:
-- Check real-time prices
-- Navigate dashboards
-- Research across dynamic sites
+1. WebSearch → static results, can't interact
+2. Puppeteer → Claude writes click commands (wastes tokens)
+3. No API exists → Stripe config, Vercel env vars, OAuth...
 
-I built comet-mcp to fix this.
+I built comet-mcp to fix #2 and #3.
 
-Here's how it works 🧵
+Here's the idea 🧵
 ```
 
-Tweet 2 (Problem):
+Tweet 2 (Problem with Puppeteer):
 ```
-The current tools (WebSearch, WebFetch) are limited:
-- Static content only
-- No login handling
-- No multi-step navigation
-- No interaction with web apps
+You could give Claude a Puppeteer MCP.
 
-But what if Claude could control a real browser?
-```
+But then Claude has to write:
+"click #btn, wait 2s, scroll down, find .element..."
 
-Tweet 3 (Solution):
-```
-comet-mcp connects Claude Code to Perplexity Comet browser.
-
-Comet has "agentic browsing" - it can:
-- Navigate sites autonomously
-- Click buttons, fill forms
-- Research across multiple sources
-- Handle dynamic content
+This wastes tokens on browser mechanics.
+Claude isn't good at this. It's not a browser expert.
 ```
 
-Tweet 4 (How it works):
+Tweet 3 (The insight):
 ```
-The architecture:
+The insight: don't make Claude learn browser automation.
 
-Claude Code
-  ↓ (MCP Protocol)
-comet-mcp server
-  ↓ (Chrome DevTools Protocol)
-Comet Browser
-  ↓
-Perplexity AI (agentic browsing)
+Let it delegate to an agent that already knows how.
 
-Claude sends tasks, polls progress, gets results.
+Enter Perplexity Comet - an agentic browser that
+figures out how to navigate, where to click, what to read.
 ```
 
-Tweet 5 (Example):
+Tweet 4 (Agent-to-agent):
 ```
-Example:
+comet-mcp enables agent-to-agent delegation:
 
-Me: "Compare pricing of the top 3 auth providers"
+Claude (Manager): "Research how to set up Stripe webhooks"
+         ↓
+Comet (Specialist): [navigates docs, finds settings, reads instructions]
+         ↓
+Claude: [uses results in your codebase context]
 
-Claude:
-→ comet_connect
-→ comet_ask "Research Auth0 vs Clerk vs Supabase pricing..."
-→ comet_poll (watching Comet browse)
-→ Returns structured comparison
+Each AI does what it's best at.
+```
 
-[screenshot or GIF here]
+Tweet 5 (Use cases):
+```
+Perfect for things with NO API/CLI:
+
+- Stripe dashboard configs
+- Vercel/Netlify env vars
+- OAuth app setup (Google, GitHub)
+- AWS Console navigation
+- Any SaaS admin panel
+
+When there's no programmatic option, Comet handles it.
 ```
 
 Tweet 6 (Setup):
@@ -216,8 +258,6 @@ Setup takes 2 minutes:
 
 2. Start Comet with:
 --remote-debugging-port=9222
-
-Done.
 ```
 
 Tweet 7 (CTA):
@@ -227,9 +267,9 @@ Try it:
 GitHub: github.com/hanzili/comet-mcp
 npm: npx comet-mcp
 
-6 tools. Open source. MIT licensed.
+6 tools. Agent-to-agent. Open source.
 
-If you build something cool with it, let me know!
+What browser tasks would you delegate?
 ```
 
 ### 5. Product Hunt (Later)
@@ -243,14 +283,40 @@ If you build something cool with it, let me know!
 ## Content Assets Needed
 
 ### Must Have:
-- [ ] **Demo GIF** (30 sec): Show Claude delegating task → Comet browsing → results returned
+- [ ] **Demo GIF** (30 sec): Show Claude delegating "research Stripe webhook setup" → Comet navigating → results
 - [ ] **GitHub README** with clear setup steps ✅
-- [ ] **Architecture diagram** (simple ASCII is fine) ✅
+- [ ] **Architecture diagram** (agent-to-agent flow) ✅
 
 ### Nice to Have:
 - [ ] **Video demo** (2-3 min YouTube)
-- [ ] **Blog post**: "How I built comet-mcp" (technical deep-dive)
-- [ ] **Comparison chart**: comet-mcp vs WebSearch vs WebFetch vs Puppeteer MCP
+- [ ] **Blog post**: "Why I built comet-mcp: Agent-to-Agent for the browser gap"
+- [ ] **Comparison chart**: WebSearch vs Puppeteer MCP vs comet-mcp
+
+---
+
+## Demo Suggestion
+
+**Task:** Research how to configure something in a SaaS dashboard
+
+```
+User: "I need to set up Stripe webhooks for my app. Walk me through
+       the process and tell me exactly where to click in the dashboard"
+
+Claude → Comet: "Research the exact steps to set up Stripe webhooks -
+                what settings page, what options to configure, any gotchas"
+
+Comet: [navigates Stripe docs, finds dashboard instructions, reads setup guide]
+
+Result: "In Stripe Dashboard: Developers → Webhooks → Add endpoint.
+        Enter your URL, select events (payment_intent.succeeded, etc.)
+        Copy the signing secret for verification..."
+```
+
+**Why this demo works:**
+1. WebSearch would give generic articles, not dashboard navigation
+2. Puppeteer would require Claude to write click-by-click commands
+3. Shows Comet figuring out HOW on its own
+4. Result is immediately actionable
 
 ---
 
@@ -259,24 +325,27 @@ If you build something cool with it, let me know!
 ### For Different Audiences:
 
 **Claude Code Users:**
-> "Give Claude Code real browsing superpowers. Research live sites, navigate dashboards, handle dynamic content."
+> "WebSearch gives static results. Puppeteer wastes tokens on click commands. comet-mcp lets Claude delegate browser tasks to Perplexity Comet - agent-to-agent, each AI doing what it's best at."
 
 **MCP Developers:**
-> "An MCP server bridging Claude to Perplexity Comet via CDP. 6 tools: connect, ask, poll, stop, screenshot, mode."
+> "Agent-to-agent delegation via MCP + CDP. Claude sends goals, Comet handles browser mechanics. 6 tools: connect, ask, poll, stop, screenshot, mode."
 
 **General Developers:**
-> "Connect your AI assistant to an agentic browser. Delegate web research, monitor progress, get comprehensive results."
+> "For things with no API, no CLI, no MCP - Stripe configs, Vercel env vars, OAuth setup - now Claude can handle them by delegating to an agentic browser."
 
 ### Objection Handling:
 
-**"Why not just use WebSearch?"**
-> WebSearch returns static results. comet-mcp can navigate, click, fill forms, handle login walls, and do multi-step research on live sites.
+**"Why not just use WebSearch/Tavily?"**
+> They return static results. Can't navigate dashboards, fill forms, or interact with web apps. When you need to know WHERE to click in Stripe's dashboard, search results don't help.
+
+**"Why not Puppeteer MCP?"**
+> Then Claude has to write "click #btn, wait, scroll, find element..." - wasting tokens on browser mechanics it's not good at. comet-mcp lets Claude delegate the HOW to Comet, which already knows how to browse.
 
 **"Why Perplexity Comet specifically?"**
-> Comet has built-in agentic browsing - it's not just a browser, it's an AI that knows how to research. We're connecting two AI systems (Claude + Perplexity) to get the best of both.
+> Comet has built-in agentic browsing - it's an AI that knows how to research, not just a remote-controlled browser. Agent-to-agent > agent-to-puppet.
 
 **"Is this secure?"**
-> You control the browser. It runs locally. No credentials are sent through the MCP server.
+> Comet runs locally on your machine. You control what it accesses. No credentials flow through the MCP server.
 
 ---
 
@@ -324,3 +393,31 @@ If you build something cool with it, let me know!
 5. **Solve real pain** - Not "nice to have" but "fundamentally different"
 6. **MCP ecosystem is hot** - Get listed in directories early
 7. **Demo > Description** - A 30-sec GIF is worth 1000 words
+
+---
+
+## One-Liner Options
+
+```
+"Agent-to-agent delegation for Claude Code's browser gap"
+
+"WebSearch gives results. Puppeteer needs micromanaging. comet-mcp delegates."
+
+"For things with no API - let Claude delegate to Comet"
+
+"Stop making Claude write Puppeteer commands"
+```
+
+## The Pitch (30 seconds)
+
+> Claude Code is great, but it has three gaps for web tasks:
+>
+> WebSearch gives static results - can't interact with anything.
+> Puppeteer makes Claude write click commands - wastes tokens, Claude's bad at it.
+> And many things just have no API - Stripe configs, Vercel env vars, OAuth setup.
+>
+> comet-mcp solves this with agent-to-agent delegation.
+> Claude just says what it needs. Comet figures out how to get it.
+> Each AI does what it's best at.
+>
+> Six tools. Two minute setup. Open source.
