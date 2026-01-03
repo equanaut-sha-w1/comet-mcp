@@ -4,7 +4,7 @@
 
 An MCP server that connects Claude Code to [Perplexity Comet](https://www.perplexity.ai/comet) - enabling agentic web browsing, deep research, and real-time task monitoring.
 
-<!-- ![Demo](demo.gif) -->
+<!-- Demo video coming soon -->
 
 ## Why?
 
@@ -72,7 +72,7 @@ Claude: [connects to Comet, delegates research, monitors progress, returns resul
 | Tool | Description |
 |------|-------------|
 | `comet_connect` | Connect to Comet (auto-starts if needed) |
-| `comet_ask` | Send a task to Comet (non-blocking) |
+| `comet_ask` | Send a task and wait for response (blocking) |
 | `comet_poll` | Check task progress and get results |
 | `comet_stop` | Stop current task if off-track |
 | `comet_screenshot` | Capture current page |
@@ -89,23 +89,15 @@ Claude: [connects to Comet, delegates research, monitors progress, returns resul
 
 ## Prompting Tips
 
-When sending tasks to Comet via `comet_ask`, focus on **context and goals** rather than step-by-step instructions:
+**Comet is for DOING, not ASKING.** Use it for tasks that require browser interaction:
 
-**Good prompts:**
-```
-"I need to find the best React state management libraries for a large-scale app.
-Compare their bundle sizes, learning curves, and community support."
+✅ **Good:** "Go to RevenueCat dashboard and get my production API key"
+✅ **Good:** "Research pricing models of Auth0, Clerk, and Supabase Auth"
+❌ **Bad:** "How do I generate a P8 key?" (use WebSearch instead)
 
-"Help me understand how Stripe's pricing API works. I'm building a SaaS
-and need to implement usage-based billing."
-```
+Focus on **goals**, not step-by-step instructions. Comet will figure out how to navigate.
 
-**Less effective prompts:**
-```
-"Go to google.com, search for React state management, click the first result..."
-```
-
-Claude understands the task context; Comet handles the browsing. Let them collaborate - Comet will figure out the best way to navigate and gather information.
+Use `newChat: true` to start a fresh conversation when switching topics.
 
 ## Example Workflow
 
