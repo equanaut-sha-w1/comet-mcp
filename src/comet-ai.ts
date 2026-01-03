@@ -134,41 +134,125 @@ export class CometAI {
   }
 
   /**
-   * Submit the current prompt
+   * Submit the current prompt - tries multiple strategies
    */
   private async submitPrompt(): Promise<void> {
-    // Find and click submit button (Perplexity uses an arrow button)
-    const result = await cometClient.evaluate(`
+    // Wait a moment for the UI to register the input
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Strategy 1: Try clicking the submit button with various selectors
+    const clickResult = await cometClient.evaluate(`
       (() => {
-        // Try various submit button patterns
+        // Common submit button selectors for Perplexity
         const selectors = [
           'button[aria-label*="Submit"]',
           'button[aria-label*="Send"]',
+          'button[aria-label*="Ask"]',
           'button[type="submit"]',
+          // Perplexity specific - arrow button near input
+          'button:has(svg path[d*="M12"])',  // Arrow icon paths often start with M12
+          'button:has(svg[class*="arrow"])',
+          'button:has(svg[class*="send"])',
         ];
+
         for (const sel of selectors) {
-          const btn = document.querySelector(sel);
-          if (btn) {
-            btn.click();
-            return { clicked: true, selector: sel };
+          try {
+            const btn = document.querySelector(sel);
+            if (btn && !btn.disabled && btn.offsetParent !== null) {
+              btn.click();
+              return { clicked: true, selector: sel, method: 'direct' };
+            }
+          } catch (e) {
+            // :has() might not be supported, continue
           }
         }
-        // Try finding button with arrow SVG (common pattern)
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-          if (btn.querySelector('svg') && btn.closest('[class*="input"], [class*="search"]')) {
-            btn.click();
-            return { clicked: true, selector: 'svg button' };
+
+        // Strategy 2: Find the submit button - rightmost button with arrow/send icon
+        const inputEl = document.querySelector('[contenteditable="true"]') ||
+                        document.querySelector('textarea');
+        if (inputEl) {
+          const inputRect = inputEl.getBoundingClientRect();
+          let parent = inputEl.parentElement;
+          let candidates = [];
+
+          for (let i = 0; i < 4 && parent; i++) {
+            const btns = parent.querySelectorAll('button:not([disabled])');
+            for (const btn of btns) {
+              const btnRect = btn.getBoundingClientRect();
+              const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+              const btnText = (btn.textContent || '').toLowerCase();
+
+              // Skip: mode buttons, source/attach buttons, voice buttons
+              if (ariaLabel.includes('search') || ariaLabel.includes('research') ||
+                  ariaLabel.includes('labs') || ariaLabel.includes('learn') ||
+                  ariaLabel.includes('mode') || ariaLabel.includes('source') ||
+                  ariaLabel.includes('attach') || ariaLabel.includes('add') ||
+                  ariaLabel.includes('voice') || ariaLabel.includes('micro') ||
+                  ariaLabel.includes('record') || btnText === '+') {
+                continue;
+              }
+
+              // Must have SVG and be visible and to the right of input
+              if (btn.querySelector('svg') && btn.offsetParent !== null &&
+                  btnRect.left > inputRect.left && btnRect.width > 0) {
+                candidates.push({ btn, right: btnRect.right });
+              }
+            }
+            parent = parent.parentElement;
+          }
+
+          // Click the rightmost candidate (submit is usually rightmost)
+          if (candidates.length > 0) {
+            candidates.sort((a, b) => b.right - a.right);
+            candidates[0].btn.click();
+            return { clicked: true, selector: 'rightmost-button', method: 'traversal' };
           }
         }
+
         return { clicked: false };
       })()
     `);
 
-    const clicked = (result.result.value as { clicked: boolean })?.clicked;
-    if (!clicked) {
-      // Fallback: press Enter
+    const clicked = (clickResult.result.value as { clicked: boolean; method?: string })?.clicked;
+
+    if (clicked) {
+      // Wait briefly to ensure click was processed
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return;
+    }
+
+    // Strategy 4: Use keyboard shortcuts
+    // First, ensure input is focused
+    await cometClient.evaluate(`
+      (() => {
+        const el = document.querySelector('[contenteditable="true"]') ||
+                   document.querySelector('textarea');
+        if (el) el.focus();
+      })()
+    `);
+
+    // Try Cmd/Ctrl + Enter (common submit shortcut)
+    try {
       await cometClient.pressKey("Enter");
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } catch {
+      // Fallback: dispatch keyboard event directly
+      await cometClient.evaluate(`
+        (() => {
+          const el = document.querySelector('[contenteditable="true"]') ||
+                     document.querySelector('textarea');
+          if (el) {
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter',
+              code: 'Enter',
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true
+            }));
+          }
+        })()
+      `);
     }
   }
 
@@ -297,8 +381,7 @@ export class CometAI {
 
   /**
    * Get current agent status and progress (for polling)
-   * Improved: Checks for stop button visibility, handles sidecar vs main tab,
-   * extracts response from current task context
+   * Gets fresh data each time, extracts URL from actual browsing tab
    */
   async getAgentStatus(): Promise<{
     status: "idle" | "working" | "completed";
@@ -308,149 +391,154 @@ export class CometAI {
     hasStopButton: boolean;
     agentBrowsingUrl: string;
   }> {
-    // First try to connect to sidecar tab for agent status
+    // Get the actual browsing URL from the agent's tab (not from text parsing)
+    let agentBrowsingUrl = '';
     try {
       const tabs = await cometClient.listTabsCategorized();
-      if (tabs.sidecar) {
-        await cometClient.connect(tabs.sidecar.id);
+      if (tabs.agentBrowsing) {
+        agentBrowsingUrl = tabs.agentBrowsing.url;
       }
     } catch {
-      // Continue with current connection
+      // Continue without URL
     }
 
+    // Get status from the current Perplexity page
     const result = await cometClient.safeEvaluate(`
       (() => {
+        // Force fresh read
         const body = document.body.innerText;
 
-        // CRITICAL: Check for ACTIVE stop button (square icon) - most reliable indicator of working state
-        const stopButton = document.querySelector('button svg rect, button[aria-label*="Stop"]');
-        const hasActiveStopButton = stopButton !== null &&
-          stopButton.closest('button')?.offsetParent !== null; // Check if visible
-
-        // Check for "Add details to this task" input - indicates agent mode is active and accepting input
-        const hasTaskInput = body.includes('Add details to this task');
-
-        // Check for completion indicators in the LATEST response section only
-        // Look for the response area that's NOT in the sidebar/history
-        const mainContent = document.querySelector('main, [role="main"], .content');
-        const mainText = mainContent ? mainContent.innerText : body;
-
-        // Check if response has "N steps completed" - indicates agent task finished
-        const stepsCompletedMatch = mainText.match(/(\\d+) steps completed/);
-        const hasStepsCompleted = stepsCompletedMatch !== null;
-
-        // Check for "Finished" marker that appears after agent completes
-        const finishedMarkers = document.querySelectorAll('*');
-        let hasFinishedMarker = false;
-        for (const el of finishedMarkers) {
-          if (el.textContent === 'Finished' && el.offsetParent !== null) {
-            hasFinishedMarker = true;
+        // Check for ACTIVE stop button - multiple detection methods
+        let hasActiveStopButton = false;
+        const stopButtons = document.querySelectorAll('button');
+        for (const btn of stopButtons) {
+          const rect = btn.querySelector('rect'); // Square icon
+          const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+          if ((rect || ariaLabel.includes('stop')) &&
+              btn.offsetParent !== null && !btn.disabled) {
+            hasActiveStopButton = true;
             break;
           }
         }
 
-        // "Reviewed N sources" without active stop button means completed
-        const hasReviewedSources = /Reviewed \\d+ sources/.test(mainText);
+        // Check for animated loading indicators
+        const hasLoadingSpinner = document.querySelector('[class*="animate-spin"], [class*="animate-pulse"], .spinner') !== null;
 
-        // Working indicators - only valid if stop button is present
-        const workingIndicators = [
+        // Check for completion indicators
+        const stepsCompletedMatch = body.match(/(\\d+) steps? completed/i);
+        const hasStepsCompleted = stepsCompletedMatch !== null;
+
+        // Check for "Finished" or "Reviewed N sources"
+        const hasFinishedMarker = body.includes('Finished') && !hasActiveStopButton;
+        const hasReviewedSources = /Reviewed \\d+ sources?/i.test(body);
+
+        // Working indicators
+        const workingPatterns = [
           'Working…', 'Working...', 'Searching', 'Reviewing sources',
-          'Preparing to assist', 'Clicking', 'Typing:', 'Navigating'
+          'Preparing to assist', 'Clicking', 'Typing:', 'Navigating to',
+          'Reading', 'Analyzing'
         ];
-        const hasWorkingText = workingIndicators.some(indicator => mainText.includes(indicator));
+        const hasWorkingText = workingPatterns.some(p => body.includes(p));
 
-        // Determine status with priority:
-        // 1. If stop button is visible AND clickable -> working
-        // 2. If "N steps completed" visible -> completed
-        // 3. If working text but no stop button -> likely completed (stop button removed)
-        // 4. If task input visible but nothing else -> idle (waiting for input)
+        // Status determination
         let status = 'idle';
-        if (hasActiveStopButton || (hasWorkingText && hasTaskInput && !hasStepsCompleted)) {
+        if (hasActiveStopButton || hasLoadingSpinner) {
           status = 'working';
-        } else if (hasStepsCompleted || hasFinishedMarker || (hasReviewedSources && !hasActiveStopButton)) {
+        } else if (hasStepsCompleted || hasFinishedMarker) {
           status = 'completed';
-        } else if (hasTaskInput) {
-          status = 'idle';
+        } else if (hasReviewedSources && !hasWorkingText) {
+          status = 'completed';
+        } else if (hasWorkingText) {
+          status = 'working';
         }
 
-        // Extract agent steps from the page
+        // Extract agent steps
         const steps = [];
         const stepPatterns = [
           /Preparing to assist[^\\n]*/g,
-          /I can see[^\\n]*/g,
-          /Good,[^\\n]*/g,
           /Clicking[^\\n]*/g,
           /Typing:[^\\n]*/g,
           /Navigating[^\\n]*/g,
-          /It seems[^\\n]*/g,
-          /Let me[^\\n]*/g,
-          /I need to[^\\n]*/g,
-          /I'll[^\\n]*/g
+          /Reading[^\\n]*/g,
+          /Searching[^\\n]*/g,
+          /Found[^\\n]*/g
         ];
         for (const pattern of stepPatterns) {
-          const matches = mainText.match(pattern);
-          if (matches) steps.push(...matches.map(s => s.trim().substring(0, 100)));
+          const matches = body.match(pattern);
+          if (matches) {
+            steps.push(...matches.map(s => s.trim().substring(0, 100)));
+          }
         }
 
-        // Current step is the last meaningful one
         const currentStep = steps.length > 0 ? steps[steps.length - 1] : '';
 
-        // Extract response - find the LATEST answer content
+        // Extract response for completed status
         let response = '';
         if (status === 'completed') {
-          // Find main prose blocks (they have "inline" in class, not sub-elements)
-          const mainProseEls = Array.from(document.querySelectorAll('[class*="prose"]'))
-            .filter(el => el.className.includes('inline'));
-
-          // Get the last main prose element which should be the current response
-          if (mainProseEls.length > 0) {
-            const lastProse = mainProseEls[mainProseEls.length - 1];
-            response = lastProse.innerText;
+          // Strategy 1: Look for prose elements (main answer content)
+          // Take the LAST one - most recent answer in conversation
+          const proseEls = document.querySelectorAll('[class*="prose"]');
+          for (let i = proseEls.length - 1; i >= 0; i--) {
+            const text = proseEls[i].innerText.trim();
+            if (text.length > 5 && !text.startsWith('Related')) {
+              response = text;
+              break;
+            }
           }
 
-          // If still empty or too short, try to extract from main content after completion markers
-          if (!response || response.length < 50) {
-            const completionIndex = mainText.indexOf('steps completed');
-            if (completionIndex > -1) {
-              // Find the response section after "N steps completed"
-              const afterCompletion = mainText.substring(completionIndex);
-              // Extract until we hit "Related" or "Ask a follow-up" or end
-              const endMarkers = ['Related', 'Ask a follow-up', 'Ask anything'];
-              let endIndex = afterCompletion.length;
+          // Strategy 2: Look for answer section by structure
+          if (!response) {
+            // Find the main content area after "Reviewed X sources"
+            const reviewedMatch = body.match(/Reviewed \\d+ sources?/);
+            if (reviewedMatch) {
+              const startIdx = body.indexOf(reviewedMatch[0]) + reviewedMatch[0].length;
+              const endMarkers = ['Related', 'Ask a follow-up', 'Ask anything', 'Share', 'Copy'];
+              let endIdx = body.length;
+              for (const marker of endMarkers) {
+                const idx = body.indexOf(marker, startIdx);
+                if (idx > startIdx && idx < endIdx) endIdx = idx;
+              }
+              response = body.substring(startIdx, endIdx).trim();
+            }
+          }
+
+          // Strategy 3: Fallback - extract after completion marker
+          if (!response || response.length < 5) {
+            const completionIdx = body.indexOf('steps completed');
+            if (completionIdx > -1) {
+              const afterCompletion = body.substring(completionIdx + 15);
+              const endMarkers = ['Related', 'Ask a follow-up', 'Ask anything', 'Sources'];
+              let endIdx = afterCompletion.length;
               for (const marker of endMarkers) {
                 const idx = afterCompletion.indexOf(marker);
-                if (idx > 0 && idx < endIndex) endIndex = idx;
+                if (idx > 0 && idx < endIdx) endIdx = idx;
               }
-              response = afterCompletion.substring(15, endIndex).trim();
+              response = afterCompletion.substring(0, endIdx).trim();
             }
           }
         }
 
-        // Get the URL the agent is currently browsing (from screenshots or context)
-        let agentBrowsingUrl = '';
-        const urlMatch = mainText.match(/https?:\\/\\/[^\\s\\n]+/);
-        if (urlMatch) {
-          agentBrowsingUrl = urlMatch[0];
-        }
-
         return {
           status,
-          steps: [...new Set(steps)].slice(-5), // Dedupe and get last 5
+          steps: [...new Set(steps)].slice(-5),
           currentStep,
-          response: response.substring(0, 2000),
-          hasStopButton: hasActiveStopButton || hasTaskInput,
-          agentBrowsingUrl
+          response: response.substring(0, 3000),
+          hasStopButton: hasActiveStopButton
         };
       })()
     `);
 
-    return result.result.value as {
+    const evalResult = result.result.value as {
       status: "idle" | "working" | "completed";
       steps: string[];
       currentStep: string;
       response: string;
       hasStopButton: boolean;
-      agentBrowsingUrl: string;
+    };
+
+    return {
+      ...evalResult,
+      agentBrowsingUrl, // From actual tab, not text parsing
     };
   }
 

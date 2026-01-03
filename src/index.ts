@@ -22,12 +22,18 @@ const TOOLS: Tool[] = [
   },
   {
     name: "comet_ask",
-    description: `Send a prompt to Comet/Perplexity (non-blocking). Use comet_poll to check progress.
+    description: `Send a prompt to Comet/Perplexity and wait for the complete response (blocking).
 
 WHEN TO USE COMET vs other tools:
 - USE COMET for: tasks requiring real browser interaction (login walls, dynamic content, multi-step navigation, filling forms, clicking buttons, scraping live data from specific sites)
 - USE COMET for: deep research that benefits from Perplexity's agentic browsing (comparing multiple sources, following links, comprehensive analysis)
 - USE regular WebSearch/WebFetch for: simple factual queries, quick lookups, static content
+
+IMPORTANT - Comet is for DOING, not just ASKING:
+- DON'T ask "how to" questions → use WebSearch instead
+- DO ask Comet to perform actions: "Go to X and do Y"
+- Bad: "How do I generate a P8 key in App Store Connect?"
+- Good: "Take over the browser, go to App Store Connect, navigate to In-App Purchase keys section"
 
 PROMPTING TIPS:
 - Give context and goals, not step-by-step instructions
@@ -38,6 +44,8 @@ PROMPTING TIPS:
       type: "object",
       properties: {
         prompt: { type: "string", description: "Question or task for Comet - focus on goals and context" },
+        timeout: { type: "number", description: "Max wait time in ms (default: 300000 = 5 min)" },
+        newChat: { type: "boolean", description: "Start a fresh conversation (default: false)" },
       },
       required: ["prompt"],
     },
@@ -86,42 +94,131 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "comet_connect": {
-        // Auto-start Comet if not running
-        try {
-          await cometClient.getVersion();
-        } catch {
-          await cometClient.startComet(9222);
-        }
+        // Auto-start Comet with debug port (will restart if running without it)
+        const startResult = await cometClient.startComet(9222);
 
-        // Connect to Perplexity tab
+        // Get all tabs and clean up - close all except one
         const targets = await cometClient.listTargets();
-        const perplexityTab = targets.find(t =>
-          t.type === 'page' && t.url.includes('perplexity.ai')
-        );
+        const pageTabs = targets.filter(t => t.type === 'page');
 
-        if (perplexityTab) {
-          const result = await cometClient.connect(perplexityTab.id);
-          return { content: [{ type: "text", text: result }] };
+        // Close extra tabs, keep only one
+        if (pageTabs.length > 1) {
+          for (let i = 1; i < pageTabs.length; i++) {
+            try {
+              await cometClient.closeTab(pageTabs[i].id);
+            } catch { /* ignore */ }
+          }
         }
 
-        // No Perplexity tab, connect to any page
-        const anyPage = targets.find(t => t.type === 'page');
+        // Get fresh tab list
+        const freshTargets = await cometClient.listTargets();
+        const anyPage = freshTargets.find(t => t.type === 'page');
+
         if (anyPage) {
           await cometClient.connect(anyPage.id);
+          // Always navigate to Perplexity home for clean state
           await cometClient.navigate("https://www.perplexity.ai/", true);
-          return { content: [{ type: "text", text: "Connected and navigated to Perplexity" }] };
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          return { content: [{ type: "text", text: `${startResult}\nConnected to Perplexity (cleaned ${pageTabs.length - 1} old tabs)` }] };
         }
 
-        return { content: [{ type: "text", text: "Connected to Comet" }] };
+        // No tabs at all - create a new one
+        const newTab = await cometClient.newTab("https://www.perplexity.ai/");
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for page load
+        await cometClient.connect(newTab.id);
+        return { content: [{ type: "text", text: `${startResult}\nCreated new tab and navigated to Perplexity` }] };
       }
 
       case "comet_ask": {
         const prompt = args?.prompt as string;
-        const result = await cometAI.sendPrompt(prompt);
+        const timeout = (args?.timeout as number) || 300000; // Default 5 minutes
+        const newChat = (args?.newChat as boolean) || false;
+
+        // Start fresh conversation if requested, or navigate if not on Perplexity
+        const state = cometClient.currentState;
+        const isOnPerplexity = state.currentUrl?.includes('perplexity.ai');
+        if (newChat || !isOnPerplexity) {
+          await cometClient.navigate("https://www.perplexity.ai/", true);
+          await new Promise(resolve => setTimeout(resolve, 1500)); // Wait for page load
+        }
+
+        // Send the prompt
+        await cometAI.sendPrompt(prompt);
+
+        // Wait for completion with polling - log progress to stderr in real-time
+        const startTime = Date.now();
+        const progressLog: string[] = [];
+        const seenSteps = new Set<string>();
+        let lastUrl = '';
+        let sawWorkingState = false;  // Track if we've seen task actually start
+
+        const log = (msg: string) => {
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          const line = `[comet ${elapsed}s] ${msg}`;
+          console.error(line);  // stderr won't interfere with MCP protocol
+          progressLog.push(line);
+        };
+
+        log('🚀 Task started');
+
+        while (Date.now() - startTime < timeout) {
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Poll every 2s
+
+          const status = await cometAI.getAgentStatus();
+
+          // Log new steps we haven't seen
+          for (const step of status.steps) {
+            if (!seenSteps.has(step)) {
+              seenSteps.add(step);
+              log(`📋 ${step}`);
+            }
+          }
+
+          // Log URL changes during agentic browsing
+          if (status.agentBrowsingUrl && status.agentBrowsingUrl !== lastUrl) {
+            lastUrl = status.agentBrowsingUrl;
+            log(`🌐 ${lastUrl}`);
+          }
+
+          // Track if task has actually started (working state)
+          if (status.status === 'working') {
+            if (!sawWorkingState) {
+              sawWorkingState = true;
+              log('⚙️ Task processing...');
+            }
+            if (status.currentStep && !progressLog[progressLog.length - 1]?.includes(status.currentStep)) {
+              log(`⏳ ${status.currentStep}`);
+            }
+          }
+
+          // Only accept "completed" if we've seen the task actually start
+          // This prevents returning stale responses from previous queries
+          if (status.status === 'completed' && sawWorkingState) {
+            log('✅ Task completed');
+            let output = status.response || 'Task completed (no response text extracted)';
+            return { content: [{ type: "text", text: output }] };
+          }
+
+          // If still showing "completed" but we haven't seen "working" yet,
+          // it's the old response - wait for new task to start
+          if (status.status === 'completed' && !sawWorkingState) {
+            // Check if it's been too long without seeing working state (maybe simple query)
+            const elapsed = Date.now() - startTime;
+            if (elapsed > 10000) {
+              // After 10s, if still showing completed, accept it
+              log('✅ Task completed (quick response)');
+              let output = status.response || 'Task completed (no response text extracted)';
+              return { content: [{ type: "text", text: output }] };
+            }
+          }
+        }
+
+        // Timeout
+        log('⏰ Timeout');
         return {
           content: [{
             type: "text",
-            text: `${result}\n\nUse comet_poll to check progress.`,
+            text: `Timeout after ${timeout/1000}s.\n\nProgress:\n${progressLog.join('\n')}\n\nUse comet_poll to check if still working.`,
           }],
         };
       }
@@ -175,16 +272,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!mode) {
           const result = await cometClient.evaluate(`
             (() => {
+              // Try button group first (wide screen)
               const modes = ['Search', 'Research', 'Labs', 'Learn'];
-              let activeMode = 'search';
               for (const mode of modes) {
                 const btn = document.querySelector('button[aria-label="' + mode + '"]');
                 if (btn && btn.getAttribute('data-state') === 'checked') {
-                  activeMode = mode.toLowerCase();
-                  break;
+                  return mode.toLowerCase();
                 }
               }
-              return activeMode;
+              // Try dropdown (narrow screen) - look for the mode selector button
+              const dropdownBtn = document.querySelector('button[class*="gap"]');
+              if (dropdownBtn) {
+                const text = dropdownBtn.innerText.toLowerCase();
+                if (text.includes('search')) return 'search';
+                if (text.includes('research')) return 'research';
+                if (text.includes('labs')) return 'labs';
+                if (text.includes('learn')) return 'learn';
+              }
+              return 'search';
             })()
           `);
 
@@ -226,19 +331,59 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await cometClient.navigate("https://www.perplexity.ai/", true);
         }
 
-        // Click the mode button
+        // Try both UI patterns: button group (wide) and dropdown (narrow)
         const result = await cometClient.evaluate(`
           (() => {
+            // Strategy 1: Direct button (wide screen)
             const btn = document.querySelector('button[aria-label="${ariaLabel}"]');
             if (btn) {
               btn.click();
-              return { success: true };
+              return { success: true, method: 'button' };
             }
-            return { success: false, error: "Button not found" };
+
+            // Strategy 2: Dropdown menu (narrow screen)
+            // Find and click the dropdown trigger (button with current mode text)
+            const allButtons = document.querySelectorAll('button');
+            for (const b of allButtons) {
+              const text = b.innerText.toLowerCase();
+              if ((text.includes('search') || text.includes('research') ||
+                   text.includes('labs') || text.includes('learn')) &&
+                  b.querySelector('svg')) {
+                b.click();
+                return { success: true, method: 'dropdown-open', needsSelect: true };
+              }
+            }
+
+            return { success: false, error: "Mode selector not found" };
           })()
         `);
 
-        const clickResult = result.result.value as { success: boolean; error?: string };
+        const clickResult = result.result.value as { success: boolean; method?: string; needsSelect?: boolean; error?: string };
+
+        if (clickResult.success && clickResult.needsSelect) {
+          // Wait for dropdown to open, then select the mode
+          await new Promise(resolve => setTimeout(resolve, 300));
+          const selectResult = await cometClient.evaluate(`
+            (() => {
+              // Look for dropdown menu items
+              const items = document.querySelectorAll('[role="menuitem"], [role="option"], button');
+              for (const item of items) {
+                if (item.innerText.toLowerCase().includes('${mode}')) {
+                  item.click();
+                  return { success: true };
+                }
+              }
+              return { success: false, error: "Mode option not found in dropdown" };
+            })()
+          `);
+          const selectRes = selectResult.result.value as { success: boolean; error?: string };
+          if (selectRes.success) {
+            return { content: [{ type: "text", text: `Switched to ${mode} mode` }] };
+          } else {
+            return { content: [{ type: "text", text: `Failed: ${selectRes.error}` }], isError: true };
+          }
+        }
+
         if (clickResult.success) {
           return { content: [{ type: "text", text: `Switched to ${mode} mode` }] };
         } else {

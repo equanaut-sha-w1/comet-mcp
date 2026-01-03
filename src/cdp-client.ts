@@ -23,7 +23,9 @@ export class CometCDPClient {
   };
   private lastTargetId: string | undefined;
   private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 3;
+  private maxReconnectAttempts: number = 5;
+  private isReconnecting: boolean = false;
+  private lastSuccessfulOperation: number = Date.now();
 
   get isConnected(): boolean {
     return this.state.connected && this.client !== null;
@@ -34,42 +36,116 @@ export class CometCDPClient {
   }
 
   /**
-   * Auto-reconnect wrapper for operations
+   * Check if the connection is still alive
+   */
+  private async isConnectionAlive(): Promise<boolean> {
+    if (!this.client) return false;
+    try {
+      await this.client.Runtime.evaluate({ expression: '1' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Auto-reconnect wrapper for operations with improved error handling
    */
   private async withAutoReconnect<T>(operation: () => Promise<T>): Promise<T> {
+    // If already reconnecting, wait for it to complete
+    if (this.isReconnecting) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
     try {
-      return await operation();
+      const result = await operation();
+      this.lastSuccessfulOperation = Date.now();
+      this.reconnectAttempts = 0; // Reset on success
+      return result;
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (errorMessage.includes('WebSocket') || errorMessage.includes('CLOSED') || errorMessage.includes('not open')) {
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.reconnectAttempts++;
-          console.log(`Connection lost, attempting reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+
+      // Connection-related errors that warrant reconnection
+      const connectionErrors = [
+        'WebSocket',
+        'CLOSED',
+        'not open',
+        'disconnected',
+        'ECONNREFUSED',
+        'ECONNRESET',
+        'Protocol error',
+        'Target closed',
+        'Session closed'
+      ];
+
+      const isConnectionError = connectionErrors.some(e => errorMessage.includes(e));
+
+      if (isConnectionError && this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.reconnectAttempts++;
+        this.isReconnecting = true;
+
+        try {
+          // Wait a bit before reconnecting (exponential backoff)
+          const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 5000);
+          await new Promise(resolve => setTimeout(resolve, delay));
+
           await this.reconnect();
+          this.isReconnecting = false;
+
+          // Retry the operation
           return await operation();
+        } catch (reconnectError) {
+          this.isReconnecting = false;
+          throw reconnectError;
         }
       }
+
       throw error;
     }
   }
 
   /**
-   * Reconnect to the last connected tab
+   * Reconnect to the last connected tab with improved retry logic
    */
   async reconnect(): Promise<string> {
+    // Cleanup old connection
+    if (this.client) {
+      try {
+        await this.client.close();
+      } catch {
+        // Ignore close errors
+      }
+    }
     this.state.connected = false;
     this.client = null;
 
-    // Try to reconnect to the last target or find a suitable one
+    // Verify Comet is still running
+    try {
+      await this.getVersion();
+    } catch {
+      // Comet might have crashed, try to restart
+      try {
+        await this.startComet(this.state.port);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch {
+        throw new Error('Cannot connect to Comet. Please ensure Comet is running with --remote-debugging-port=9222');
+      }
+    }
+
+    // Try to reconnect to the last target
     if (this.lastTargetId) {
       try {
-        return await this.connect(this.lastTargetId);
+        const targets = await this.listTargets();
+        const lastTarget = targets.find(t => t.id === this.lastTargetId);
+        if (lastTarget) {
+          return await this.connect(this.lastTargetId);
+        }
       } catch {
         // Target might be gone, find a new one
       }
     }
 
-    // Find the best target to connect to
+    // Find the best target to connect to (prioritize main Perplexity tab)
     const targets = await this.listTargets();
     const perplexityTab = targets.find(t =>
       t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')
@@ -77,8 +153,9 @@ export class CometCDPClient {
     const sidecarTab = targets.find(t =>
       t.type === 'page' && t.url.includes('sidecar')
     );
+    const anyPage = targets.find(t => t.type === 'page' && t.url !== 'about:blank');
 
-    const target = perplexityTab || sidecarTab || targets.find(t => t.type === 'page');
+    const target = perplexityTab || sidecarTab || anyPage;
     if (target) {
       return await this.connect(target.id);
     }
@@ -177,19 +254,61 @@ export class CometCDPClient {
   }
 
   /**
+   * Check if Comet process is running (regardless of debug port)
+   */
+  private async isCometProcessRunning(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const check = spawn('pgrep', ['-f', 'Comet.app']);
+      check.on('close', (code) => {
+        resolve(code === 0);
+      });
+    });
+  }
+
+  /**
+   * Kill any running Comet process
+   */
+  private async killComet(): Promise<void> {
+    return new Promise((resolve) => {
+      const kill = spawn('pkill', ['-f', 'Comet.app']);
+      kill.on('close', () => {
+        // Wait a bit for process to fully terminate
+        setTimeout(resolve, 1000);
+      });
+    });
+  }
+
+  /**
    * Start Comet browser with remote debugging enabled
+   * Automatically restarts Comet if it's running without debug port
    */
   async startComet(port: number = DEFAULT_PORT): Promise<string> {
     this.state.port = port;
 
-    // Check if Comet is already running with debugging
+    // Check if Comet is already running WITH debugging enabled
     try {
-      const version = await this.getVersion();
-      return `Comet already running: ${version.Browser}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+      const response = await fetch(`http://localhost:${port}/json/version`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const version = await response.json() as CDPVersion;
+        return `Comet already running with debug port: ${version.Browser}`;
+      }
     } catch {
-      // Not running, start it
+      // Debug port not available, check if Comet is running without it
+      const isRunning = await this.isCometProcessRunning();
+      if (isRunning) {
+        // Comet is running but without debug port - restart it
+        await this.killComet();
+      }
     }
 
+    // Start Comet with debugging enabled
     return new Promise((resolve, reject) => {
       this.cometProcess = spawn(COMET_PATH, [
         `--remote-debugging-port=${port}`,
@@ -201,24 +320,37 @@ export class CometCDPClient {
       this.cometProcess.unref();
 
       // Wait for Comet to start
-      const maxAttempts = 30;
+      const maxAttempts = 40; // 20 seconds total
       let attempts = 0;
 
       const checkReady = async () => {
         attempts++;
         try {
-          const version = await this.getVersion();
-          resolve(`Comet started: ${version.Browser}`);
-        } catch {
-          if (attempts < maxAttempts) {
-            setTimeout(checkReady, 500);
-          } else {
-            reject(new Error("Timeout waiting for Comet to start"));
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+          const response = await fetch(`http://localhost:${port}/json/version`, {
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+
+          if (response.ok) {
+            const version = await response.json() as CDPVersion;
+            resolve(`Comet started with debug port ${port}: ${version.Browser}`);
+            return;
           }
+        } catch {
+          // Keep trying
+        }
+
+        if (attempts < maxAttempts) {
+          setTimeout(checkReady, 500);
+        } else {
+          reject(new Error(`Timeout waiting for Comet to start. Please try manually: /Applications/Comet.app/Contents/MacOS/Comet --remote-debugging-port=${port}`));
         }
       };
 
-      setTimeout(checkReady, 1000);
+      setTimeout(checkReady, 1500);
     });
   }
 
@@ -269,6 +401,28 @@ export class CometCDPClient {
       this.client.DOM.enable(),
       this.client.Network.enable(),
     ]);
+
+    // Set actual window size (1440x900) to ensure consistent UI
+    try {
+      // Get window ID and set bounds
+      const { windowId } = await (this.client as any).Browser.getWindowForTarget({ targetId });
+      await (this.client as any).Browser.setWindowBounds({
+        windowId,
+        bounds: { width: 1440, height: 900, windowState: 'normal' },
+      });
+    } catch (e) {
+      // Fallback to emulation if Browser API fails
+      try {
+        await (this.client as any).Emulation.setDeviceMetricsOverride({
+          width: 1440,
+          height: 900,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+      } catch {
+        // Continue anyway
+      }
+    }
 
     this.state.connected = true;
     this.state.activeTabId = targetId;
@@ -499,7 +653,8 @@ export class CometCDPClient {
    */
   async newTab(url?: string): Promise<CDPTarget> {
     const response = await fetch(
-      `http://localhost:${this.state.port}/json/new${url ? `?${url}` : ""}`
+      `http://localhost:${this.state.port}/json/new${url ? `?${url}` : ""}`,
+      { method: 'PUT' }
     );
     if (!response.ok) {
       throw new Error(`Failed to create new tab: ${response.status}`);
