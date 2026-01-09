@@ -210,40 +210,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         `);
         const oldState = oldStateResult.result.value as { count: number; lastText: string };
 
-        // Verify we're on Perplexity before sending
-        const urlCheck = await cometClient.evaluate('window.location.href');
-        const currentUrl = urlCheck.result.value as string;
-        console.error(`[comet_ask] Current URL before sendPrompt: ${currentUrl}`);
-        if (!currentUrl?.includes('perplexity.ai')) {
-          console.error(`[comet_ask] ERROR: Not on Perplexity! Reconnecting...`);
-          const tabs = await cometClient.listTargets();
-          const perplexityTab = tabs.find(t => t.type === 'page' && t.url.includes('perplexity.ai'));
-          if (perplexityTab) {
-            await cometClient.connect(perplexityTab.id);
-            // Wait for page to be ready
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        }
-
-        // Explicitly focus the input element before sendPrompt
-        await cometClient.evaluate(`
-          (() => {
-            const el = document.querySelector('[contenteditable="true"]') || document.querySelector('textarea');
-            if (el) {
-              el.focus();
-              el.click();
-            }
-          })()
-        `);
-        await new Promise(resolve => setTimeout(resolve, 300));
-
         // Send the prompt
         await cometAI.sendPrompt(prompt);
 
         // Wait up to 'wait' ms for completion (non-blocking after that)
         const startTime = Date.now();
         const stepsCollected: string[] = [];
-        let sawWorkingState = false;
         let sawNewResponse = false;
 
         while (Date.now() - startTime < wait) {
@@ -277,11 +249,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             if (!stepsCollected.includes(step)) {
               stepsCollected.push(step);
             }
-          }
-
-          // Track if task has started
-          if (status.status === 'working') {
-            sawWorkingState = true;
           }
 
           // Task completed - return result directly (but only if we saw a NEW response)

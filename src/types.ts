@@ -49,9 +49,3 @@ export interface CometState {
   currentUrl?: string;
   activeTabId?: string;
 }
-
-export interface CometAIResponse {
-  text: string;
-  complete: boolean;
-  timestamp: number;
-}

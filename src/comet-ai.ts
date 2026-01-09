@@ -2,50 +2,22 @@
 // Handles sending prompts to Comet's AI assistant and reading responses
 
 import { cometClient } from "./cdp-client.js";
-import type { CometAIResponse } from "./types.js";
 
-// Selectors for Perplexity/Comet AI interface
-const SELECTORS = {
-  // Input selectors - contenteditable div is primary for Perplexity
-  input: [
-    '[contenteditable="true"]',
-    'textarea[placeholder*="Ask"]',
-    'textarea[placeholder*="Search"]',
-    'textarea',
-    'input[type="text"]',
-  ],
-  // Response/output selectors for Perplexity
-  response: [
-    '[class*="prose"]',
-    'main article',
-    '[data-testid*="answer"]',
-    '[class*="answer"]',
-    '[class*="response"]',
-  ],
-  // Loading indicator selectors
-  loading: [
-    '[class*="animate-pulse"]',
-    '[class*="loading"]',
-    '[class*="thinking"]',
-    '.spinner',
-  ],
-  // Submit button selectors - Perplexity uses arrow button
-  submit: [
-    'button[aria-label*="Submit"]',
-    'button[aria-label*="Send"]',
-    'button[type="submit"]',
-    'button svg[class*="arrow"]',
-  ],
-};
+// Input selectors - contenteditable div is primary for Perplexity
+const INPUT_SELECTORS = [
+  '[contenteditable="true"]',
+  'textarea[placeholder*="Ask"]',
+  'textarea[placeholder*="Search"]',
+  'textarea',
+  'input[type="text"]',
+];
 
 export class CometAI {
-  private lastResponseText: string = "";
-
   /**
    * Find the first matching element from a list of selectors
    */
-  async findElement(selectors: string[]): Promise<string | null> {
-    for (const selector of selectors) {
+  private async findInputElement(): Promise<string | null> {
+    for (const selector of INPUT_SELECTORS) {
       const result = await cometClient.evaluate(`
         document.querySelector(${JSON.stringify(selector)}) !== null
       `);
@@ -57,47 +29,13 @@ export class CometAI {
   }
 
   /**
-   * Get information about Comet's AI interface
-   */
-  async inspectInterface(): Promise<{
-    inputSelector: string | null;
-    responseSelector: string | null;
-    hasInput: boolean;
-    pageInfo: string;
-  }> {
-    const inputSelector = await this.findElement(SELECTORS.input);
-    const responseSelector = await this.findElement(SELECTORS.response);
-
-    // Get general page info
-    const pageInfoResult = await cometClient.evaluate(`
-      JSON.stringify({
-        url: window.location.href,
-        title: document.title,
-        textareas: document.querySelectorAll('textarea').length,
-        inputs: document.querySelectorAll('input').length,
-        contentEditables: document.querySelectorAll('[contenteditable="true"]').length,
-        buttons: document.querySelectorAll('button').length,
-      })
-    `);
-
-    return {
-      inputSelector,
-      responseSelector,
-      hasInput: inputSelector !== null,
-      pageInfo: pageInfoResult.result.value as string,
-    };
-  }
-
-  /**
    * Send a prompt to Comet's AI (Perplexity)
    */
   async sendPrompt(prompt: string): Promise<string> {
-    const inputSelector = await this.findElement(SELECTORS.input);
+    const inputSelector = await this.findInputElement();
 
     if (!inputSelector) {
-      throw new Error(
-        "Could not find input element. Navigate to Perplexity first."
-      );
+      throw new Error("Could not find input element. Navigate to Perplexity first.");
     }
 
     // Use execCommand for contenteditable elements (works with React/Vue)
@@ -108,7 +46,7 @@ export class CometAI {
           el.focus();
           document.execCommand('selectAll', false, null);
           document.execCommand('insertText', false, ${JSON.stringify(prompt)});
-          return { success: true, text: el.innerText };
+          return { success: true };
         }
         // Fallback for textarea
         const textarea = document.querySelector('textarea');
@@ -116,16 +54,15 @@ export class CometAI {
           textarea.focus();
           textarea.value = ${JSON.stringify(prompt)};
           textarea.dispatchEvent(new Event('input', { bubbles: true }));
-          return { success: true, text: textarea.value };
+          return { success: true };
         }
         return { success: false };
       })()
     `);
 
-    const typed = (result.result.value as { success: boolean; text?: string })?.success;
-    console.error(`[sendPrompt] evaluate result:`, JSON.stringify(result.result.value));
+    const typed = (result.result.value as { success: boolean })?.success;
     if (!typed) {
-      throw new Error(`Failed to type into input element. Result: ${JSON.stringify(result.result.value)}`);
+      throw new Error("Failed to type into input element");
     }
 
     // Submit the prompt
@@ -135,67 +72,52 @@ export class CometAI {
   }
 
   /**
-   * Submit the current prompt - tries multiple strategies
+   * Submit the current prompt
    */
   private async submitPrompt(): Promise<void> {
-    // Wait a moment for the UI to register the input
     await new Promise(resolve => setTimeout(resolve, 300));
 
     // Strategy 1: Use Enter key (most reliable for Perplexity)
-    try {
-      await cometClient.evaluate(`
-        (() => {
-          const el = document.querySelector('[contenteditable="true"]') ||
-                     document.querySelector('textarea');
-          if (el) el.focus();
-        })()
-      `);
-      await cometClient.pressKey("Enter");
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      // Check if submission worked (input should be cleared or response started)
-      const submitted = await cometClient.evaluate(`
-        (() => {
-          const el = document.querySelector('[contenteditable="true"]');
-          if (el && el.innerText.trim().length < 5) return true;
-          // Check if loading started
-          const hasLoading = document.querySelector('[class*="animate"]') !== null;
-          return hasLoading;
-        })()
-      `);
-      if (submitted.result.value) return;
-    } catch {
-      // Continue to button click fallback
-    }
-
-    // Strategy 2: Try clicking the submit button with various selectors
-    const clickResult = await cometClient.evaluate(`
+    await cometClient.evaluate(`
       (() => {
-        // Common submit button selectors for Perplexity
+        const el = document.querySelector('[contenteditable="true"]') ||
+                   document.querySelector('textarea');
+        if (el) el.focus();
+      })()
+    `);
+    await cometClient.pressKey("Enter");
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    // Check if submission worked
+    const submitted = await cometClient.evaluate(`
+      (() => {
+        const el = document.querySelector('[contenteditable="true"]');
+        if (el && el.innerText.trim().length < 5) return true;
+        const hasLoading = document.querySelector('[class*="animate"]') !== null;
+        return hasLoading;
+      })()
+    `);
+    if (submitted.result.value) return;
+
+    // Strategy 2: Click submit button
+    await cometClient.evaluate(`
+      (() => {
         const selectors = [
           'button[aria-label*="Submit"]',
           'button[aria-label*="Send"]',
           'button[aria-label*="Ask"]',
           'button[type="submit"]',
-          // Perplexity specific - arrow button near input
-          'button:has(svg path[d*="M12"])',  // Arrow icon paths often start with M12
-          'button:has(svg[class*="arrow"])',
-          'button:has(svg[class*="send"])',
         ];
 
         for (const sel of selectors) {
-          try {
-            const btn = document.querySelector(sel);
-            if (btn && !btn.disabled && btn.offsetParent !== null) {
-              btn.click();
-              return { clicked: true, selector: sel, method: 'direct' };
-            }
-          } catch (e) {
-            // :has() might not be supported, continue
+          const btn = document.querySelector(sel);
+          if (btn && !btn.disabled && btn.offsetParent !== null) {
+            btn.click();
+            return true;
           }
         }
 
-        // Strategy 2: Find the submit button - rightmost button with arrow/send icon
+        // Find rightmost button with SVG near input
         const inputEl = document.querySelector('[contenteditable="true"]') ||
                         document.querySelector('textarea');
         if (inputEl) {
@@ -208,19 +130,14 @@ export class CometAI {
             for (const btn of btns) {
               const btnRect = btn.getBoundingClientRect();
               const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-              const btnText = (btn.textContent || '').toLowerCase();
 
-              // Skip: mode buttons, source/attach buttons, voice buttons
+              // Skip mode/attach/voice buttons
               if (ariaLabel.includes('search') || ariaLabel.includes('research') ||
                   ariaLabel.includes('labs') || ariaLabel.includes('learn') ||
-                  ariaLabel.includes('mode') || ariaLabel.includes('source') ||
-                  ariaLabel.includes('attach') || ariaLabel.includes('add') ||
-                  ariaLabel.includes('voice') || ariaLabel.includes('micro') ||
-                  ariaLabel.includes('record') || btnText === '+') {
+                  ariaLabel.includes('attach') || ariaLabel.includes('voice')) {
                 continue;
               }
 
-              // Must have SVG and be visible and to the right of input
               if (btn.querySelector('svg') && btn.offsetParent !== null &&
                   btnRect.left > inputRect.left && btnRect.width > 0) {
                 candidates.push({ btn, right: btnRect.right });
@@ -229,177 +146,17 @@ export class CometAI {
             parent = parent.parentElement;
           }
 
-          // Click the rightmost candidate (submit is usually rightmost)
           if (candidates.length > 0) {
             candidates.sort((a, b) => b.right - a.right);
             candidates[0].btn.click();
-            return { clicked: true, selector: 'rightmost-button', method: 'traversal' };
           }
         }
-
-        return { clicked: false };
       })()
     `);
-
-    const clicked = (clickResult.result.value as { clicked: boolean; method?: string })?.clicked;
-
-    if (clicked) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    // If nothing worked, Enter key was already tried first - we've done what we can
-  }
-
-  /**
-   * Check if Comet AI is currently processing/loading
-   */
-  async isLoading(): Promise<boolean> {
-    const loadingSelector = await this.findElement(SELECTORS.loading);
-    return loadingSelector !== null;
-  }
-
-  /**
-   * Wait for Comet AI to finish responding
-   * @param oldState - Previous state to detect when NEW response appears (for follow-ups)
-   */
-  async waitForResponse(timeout: number = 30000, oldState?: { count: number; lastText: string }): Promise<CometAIResponse> {
-    const startTime = Date.now();
-    let lastText = "";
-    let stableCount = 0;
-    let foundNewResponse = !oldState; // If no oldState, we're in newChat mode
-
-    // Wait for page to start loading response
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    while (Date.now() - startTime < timeout) {
-      // Get response text from Perplexity's answer area - LAST prose element for conversations
-      const result = await cometClient.evaluate(`
-        (() => {
-          const proseEls = document.querySelectorAll('[class*="prose"]');
-          const count = proseEls.length;
-          const lastProse = proseEls[proseEls.length - 1];
-          const text = lastProse ? lastProse.innerText : '';
-          return { count, text };
-        })()
-      `);
-
-      const current = result.result.value as { count: number; text: string };
-      const currentText = current.text || "";
-
-      // For follow-ups: wait until we see a NEW response (more elements or different text)
-      if (!foundNewResponse && oldState) {
-        if (current.count > oldState.count ||
-            (currentText.length > 0 && !currentText.startsWith(oldState.lastText.substring(0, 50)))) {
-          foundNewResponse = true;
-          stableCount = 0; // Reset stability counter for new response
-        } else {
-          // Still seeing old response, keep waiting
-          await new Promise(resolve => setTimeout(resolve, 500));
-          continue;
-        }
-      }
-
-      // Check if response has stabilized (text same for 3 consecutive checks)
-      if (currentText.length > 0 && currentText === lastText) {
-        stableCount++;
-        if (stableCount >= 3) {
-          this.lastResponseText = currentText;
-          return {
-            text: currentText,
-            complete: true,
-            timestamp: Date.now(),
-          };
-        }
-      } else {
-        stableCount = 0;
-      }
-
-      lastText = currentText;
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    // Timeout - return whatever we have
-    return {
-      text: lastText || "No response detected within timeout",
-      complete: false,
-      timestamp: Date.now(),
-    };
-  }
-
-  /**
-   * Send prompt and wait for response
-   */
-  async ask(prompt: string, timeout: number = 30000): Promise<CometAIResponse> {
-    // Capture the OLD response before sending (for follow-up detection)
-    const oldResponseResult = await cometClient.evaluate(`
-      (() => {
-        // Get count of prose elements to detect when new one appears
-        const proseEls = document.querySelectorAll('[class*="prose"]');
-        const lastProse = proseEls[proseEls.length - 1];
-        return {
-          count: proseEls.length,
-          lastText: lastProse ? lastProse.innerText.substring(0, 200) : ''
-        };
-      })()
-    `);
-    const oldState = oldResponseResult.result.value as { count: number; lastText: string };
-
-    await this.sendPrompt(prompt);
-
-    // Wait a bit for the response to start
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    return this.waitForResponse(timeout, oldState);
-  }
-
-  /**
-   * Get the current visible response text
-   */
-  async getCurrentResponse(): Promise<string> {
-    const responseSelector = await this.findElement(SELECTORS.response);
-
-    if (!responseSelector) {
-      // Try to get any visible text that looks like a response
-      const result = await cometClient.evaluate(`
-        // Look for the main content area
-        const contentAreas = document.querySelectorAll('main, article, [role="main"], .content');
-        for (const area of contentAreas) {
-          if (area.innerText.length > 100) {
-            return area.innerText;
-          }
-        }
-        return document.body.innerText.substring(0, 5000);
-      `);
-      return result.result.value as string;
-    }
-
-    const result = await cometClient.evaluate(`
-      document.querySelector(${JSON.stringify(responseSelector)})?.innerText || ""
-    `);
-    return result.result.value as string;
-  }
-
-  /**
-   * Clear the current conversation/input
-   */
-  async clearConversation(): Promise<boolean> {
-    const result = await cometClient.evaluate(`
-      (function() {
-        const clearButtons = document.querySelectorAll(
-          'button[aria-label*="Clear"], button[aria-label*="New"], [class*="clear"], [class*="new-chat"]'
-        );
-        for (const btn of clearButtons) {
-          btn.click();
-          return true;
-        }
-        return false;
-      })()
-    `);
-    return result.result.value as boolean;
   }
 
   /**
    * Get current agent status and progress (for polling)
-   * Gets fresh data each time, extracts URL from actual browsing tab
    */
   async getAgentStatus(): Promise<{
     status: "idle" | "working" | "completed";
@@ -409,7 +166,7 @@ export class CometAI {
     hasStopButton: boolean;
     agentBrowsingUrl: string;
   }> {
-    // Get the actual browsing URL from the agent's tab (not from text parsing)
+    // Get browsing URL from agent's tab
     let agentBrowsingUrl = '';
     try {
       const tabs = await cometClient.listTabsCategorized();
@@ -420,17 +177,14 @@ export class CometAI {
       // Continue without URL
     }
 
-    // Get status from the current Perplexity page
     const result = await cometClient.safeEvaluate(`
       (() => {
-        // Force fresh read
         const body = document.body.innerText;
 
-        // Check for ACTIVE stop button - multiple detection methods
+        // Check for active stop button
         let hasActiveStopButton = false;
-        const stopButtons = document.querySelectorAll('button');
-        for (const btn of stopButtons) {
-          const rect = btn.querySelector('rect'); // Square icon
+        for (const btn of document.querySelectorAll('button')) {
+          const rect = btn.querySelector('rect');
           const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
           if ((rect || ariaLabel.includes('stop')) &&
               btn.offsetParent !== null && !btn.disabled) {
@@ -439,32 +193,22 @@ export class CometAI {
           }
         }
 
-        // Check for animated loading indicators
-        const hasLoadingSpinner = document.querySelector('[class*="animate-spin"], [class*="animate-pulse"], .spinner') !== null;
-
-        // Check for completion indicators
-        const stepsCompletedMatch = body.match(/(\\d+) steps? completed/i);
-        const hasStepsCompleted = stepsCompletedMatch !== null;
-
-        // Check for "Finished" or "Reviewed N sources"
+        const hasLoadingSpinner = document.querySelector('[class*="animate-spin"], [class*="animate-pulse"]') !== null;
+        const hasStepsCompleted = /\\d+ steps? completed/i.test(body);
         const hasFinishedMarker = body.includes('Finished') && !hasActiveStopButton;
         const hasReviewedSources = /Reviewed \\d+ sources?/i.test(body);
-
-        // Check for simple query completion (has follow-up prompt and any answer content)
         const hasAskFollowUp = body.includes('Ask a follow-up');
         const hasProseContent = [...document.querySelectorAll('[class*="prose"]')].some(
           el => el.innerText.trim().length > 0
         );
 
-        // Working indicators
         const workingPatterns = [
-          'Working…', 'Working...', 'Searching', 'Reviewing sources',
-          'Preparing to assist', 'Clicking', 'Typing:', 'Navigating to',
-          'Reading', 'Analyzing'
+          'Working', 'Searching', 'Reviewing sources', 'Preparing to assist',
+          'Clicking', 'Typing:', 'Navigating to', 'Reading', 'Analyzing'
         ];
         const hasWorkingText = workingPatterns.some(p => body.includes(p));
 
-        // Status determination
+        // Determine status
         let status = 'idle';
         if (hasActiveStopButton || hasLoadingSpinner) {
           status = 'working';
@@ -475,104 +219,45 @@ export class CometAI {
         } else if (hasWorkingText) {
           status = 'working';
         } else if (hasAskFollowUp && hasProseContent && !hasActiveStopButton) {
-          // Simple query completed - has follow-up prompt and prose content
           status = 'completed';
         }
 
-        // Extract agent steps
+        // Extract steps
         const steps = [];
         const stepPatterns = [
-          /Preparing to assist[^\\n]*/g,
-          /Clicking[^\\n]*/g,
-          /Typing:[^\\n]*/g,
-          /Navigating[^\\n]*/g,
-          /Reading[^\\n]*/g,
-          /Searching[^\\n]*/g,
-          /Found[^\\n]*/g
+          /Preparing to assist[^\\n]*/g, /Clicking[^\\n]*/g, /Typing:[^\\n]*/g,
+          /Navigating[^\\n]*/g, /Reading[^\\n]*/g, /Searching[^\\n]*/g, /Found[^\\n]*/g
         ];
         for (const pattern of stepPatterns) {
           const matches = body.match(pattern);
-          if (matches) {
-            steps.push(...matches.map(s => s.trim().substring(0, 100)));
-          }
+          if (matches) steps.push(...matches.map(s => s.trim().substring(0, 100)));
         }
 
-        const currentStep = steps.length > 0 ? steps[steps.length - 1] : '';
-
-        // Extract response for completed status
+        // Extract response
         let response = '';
         if (status === 'completed') {
-          // Strategy 1: Look for the answer section specifically
-          // Perplexity shows answers in a specific content area, not sidebar
-          const mainContent = document.querySelector('main') || document.querySelector('[role="main"]');
-          const searchBase = mainContent || document.body;
-
-          // Find all prose elements in the main content area
-          const allProseEls = searchBase.querySelectorAll('[class*="prose"]');
+          const mainContent = document.querySelector('main') || document.body;
+          const allProseEls = mainContent.querySelectorAll('[class*="prose"]');
           const validProseTexts = [];
 
           for (const el of allProseEls) {
-            // Skip if inside navigation, sidebar, input areas, or suggestions
-            if (el.closest('nav') ||
-                el.closest('aside') ||
-                el.closest('header') ||
-                el.closest('footer') ||
-                el.closest('[class*="sidebar"]') ||
-                el.closest('[class*="history"]') ||
-                el.closest('[class*="input"]') ||
-                el.closest('[class*="search"]') ||
-                el.closest('[class*="suggestion"]') ||
-                el.closest('textarea') ||
-                el.closest('form')) {
-              continue;
-            }
+            if (el.closest('nav, aside, header, footer, form')) continue;
 
             const text = el.innerText.trim();
-
-            // Skip known UI navigation text
             const isUIText = ['Library', 'Discover', 'Spaces', 'Finance', 'Account',
-                              'Upgrade', 'Home', 'View All', 'Search', 'Ask a follow-up',
-                              'Related', 'Images', 'Links', 'Answer'].some(ui => text.startsWith(ui));
+                              'Upgrade', 'Home', 'Search', 'Ask a follow-up'].some(ui => text.startsWith(ui));
             if (isUIText) continue;
-
-            // Skip if it looks like a question (ends with ?) and isn't an answer
             if (text.endsWith('?') && text.length < 100) continue;
-
-            // Accept meaningful text
-            if (text.length > 5) {
-              validProseTexts.push(text);
-            }
+            if (text.length > 5) validProseTexts.push(text);
           }
 
-          // Take the LAST valid prose element (most recent answer in conversation)
-          // In multi-turn conversations, we want the newest response
           if (validProseTexts.length > 0) {
             response = validProseTexts[validProseTexts.length - 1];
           }
 
-          // Strategy 2: Look for specific answer text patterns
-          if (!response || response.length < 5) {
-            // Look for text that appears after the sources indicator
-            const bodyText = document.body.innerText;
-            // Find text between "sources" and "Ask a follow-up"
-            const sourcesIdx = bodyText.lastIndexOf(' sources');
-            const followUpIdx = bodyText.indexOf('Ask a follow-up');
-            if (sourcesIdx > 0 && followUpIdx > sourcesIdx) {
-              const between = bodyText.substring(sourcesIdx + 10, followUpIdx).trim();
-              // Remove citation markers and clean up
-              const cleaned = between.replace(/[a-z]+\\.com|wikipedia|reddit/gi, '').trim();
-              if (cleaned.length > 10) {
-                response = cleaned;
-              }
-            }
-          }
-
-          // Clean up the response - remove UI artifacts
+          // Clean up response
           if (response) {
-            response = response.replace(/View All/gi, '').trim();
-            response = response.replace(/Show more/gi, '').trim();
-            response = response.replace(/Ask a follow-up/gi, '').trim();
-            response = response.replace(/\\d+ sources?/gi, '').trim();
+            response = response.replace(/View All|Show more|Ask a follow-up|\\d+ sources?/gi, '').trim();
             response = response.replace(/\\s+/g, ' ').trim();
           }
         }
@@ -580,24 +265,22 @@ export class CometAI {
         return {
           status,
           steps: [...new Set(steps)].slice(-5),
-          currentStep,
+          currentStep: steps.length > 0 ? steps[steps.length - 1] : '',
           response: response.substring(0, 8000),
           hasStopButton: hasActiveStopButton
         };
       })()
     `);
 
-    const evalResult = result.result.value as {
-      status: "idle" | "working" | "completed";
-      steps: string[];
-      currentStep: string;
-      response: string;
-      hasStopButton: boolean;
-    };
-
     return {
-      ...evalResult,
-      agentBrowsingUrl, // From actual tab, not text parsing
+      ...(result.result.value as {
+        status: "idle" | "working" | "completed";
+        steps: string[];
+        currentStep: string;
+        response: string;
+        hasStopButton: boolean;
+      }),
+      agentBrowsingUrl,
     };
   }
 
@@ -607,24 +290,18 @@ export class CometAI {
   async stopAgent(): Promise<boolean> {
     const result = await cometClient.evaluate(`
       (() => {
-        // Try to find and click stop/cancel button
-        const stopButtons = document.querySelectorAll(
-          'button[aria-label*="Stop"], button[aria-label*="Cancel"], button[aria-label*="Pause"]'
-        );
-        for (const btn of stopButtons) {
+        // Try aria-label buttons first
+        for (const btn of document.querySelectorAll('button[aria-label*="Stop"], button[aria-label*="Cancel"]')) {
           btn.click();
           return true;
         }
-
-        // Try finding a square stop icon button
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-          if (btn.querySelector('svg rect, svg[class*="stop"]')) {
+        // Try square stop icon
+        for (const btn of document.querySelectorAll('button')) {
+          if (btn.querySelector('svg rect')) {
             btn.click();
             return true;
           }
         }
-
         return false;
       })()
     `);
