@@ -75,7 +75,23 @@ export class CometAI {
    * Submit the current prompt
    */
   private async submitPrompt(): Promise<void> {
-    await new Promise(resolve => setTimeout(resolve, 300));
+    // Wait for React to process the typed content
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Verify text was typed before attempting submit
+    const hasContent = await cometClient.evaluate(`
+      (() => {
+        const el = document.querySelector('[contenteditable="true"]');
+        if (el && el.innerText.trim().length > 0) return true;
+        const textarea = document.querySelector('textarea');
+        if (textarea && textarea.value.trim().length > 0) return true;
+        return false;
+      })()
+    `);
+
+    if (!hasContent.result.value) {
+      throw new Error("Prompt text not found in input - typing may have failed");
+    }
 
     // Strategy 1: Use Enter key (most reliable for Perplexity)
     await cometClient.evaluate(`
@@ -86,7 +102,7 @@ export class CometAI {
       })()
     `);
     await cometClient.pressKey("Enter");
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Check if submission worked
     const submitted = await cometClient.evaluate(`
@@ -153,6 +169,23 @@ export class CometAI {
         }
       })()
     `);
+
+    // Final check and retry with Enter if still not submitted
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const finalCheck = await cometClient.evaluate(`
+      (() => {
+        const el = document.querySelector('[contenteditable="true"]');
+        if (el && el.innerText.trim().length < 5) return true;
+        const hasLoading = document.querySelector('[class*="animate"]') !== null;
+        const hasProseContent = document.querySelectorAll('[class*="prose"]').length > 0;
+        return hasLoading || hasProseContent;
+      })()
+    `);
+
+    if (!finalCheck.result.value) {
+      // Last resort: try Enter one more time
+      await cometClient.pressKey("Enter");
+    }
   }
 
   /**

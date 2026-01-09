@@ -35,4 +35,17 @@ npm run build
 pgrep -f "node.*comet-mcp" | xargs kill  # Restart MCP
 ```
 
-Manual testing - no unit tests (integration code, external DOM dependency).
+Manual testing only (integration code, external DOM dependency).
+
+## Test Cases
+1. **Quick queries** - Simple questions (math, facts) should return within 15s
+2. **Non-blocking** - Short timeout returns "in progress", use poll to get result
+3. **Follow-up** - Second question in same chat detects NEW response correctly
+4. **Agentic task** - "Take control of browser and go to X" triggers browsing
+5. **newChat after agentic** - `newChat: true` resets CDP state after browser control
+6. **Mode switching** - `comet_mode` changes search/research/labs/learn
+
+## Known Edge Cases
+- **Prompt not submitted**: If response shows 0 steps + COMPLETED, prompt may not have been submitted. Retry or use newChat.
+- **Stale poll response**: If poll returns unrelated response, the previous prompt failed. Send again.
+- **Research mode**: Takes longer than search mode, may need multiple polls.

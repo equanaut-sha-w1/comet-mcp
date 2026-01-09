@@ -65,7 +65,7 @@ const TOOLS: Tool[] = [
 ];
 
 const server = new Server(
-  { name: "comet-bridge", version: "2.2.1" },
+  { name: "comet-bridge", version: "2.2.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -269,7 +269,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (status.status === 'working') {
-          output += `\n[Use comet_stop to interrupt, comet_screenshot agent_tab=true to see browser]`;
+          output += `\n[Use comet_stop to interrupt, or comet_screenshot to see current page]`;
         }
 
         return { content: [{ type: "text", text: output }] };
