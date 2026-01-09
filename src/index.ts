@@ -156,16 +156,86 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           prompt = `Take control of my browser and ${prompt}`;
         }
 
-        // Get fresh URL from browser (not cached state)
-        const urlResult = await cometClient.evaluate('window.location.href');
-        const currentUrl = urlResult.result.value as string;
-        const isOnPerplexity = currentUrl?.includes('perplexity.ai');
+        // For newChat: navigate to Perplexity home for a fresh conversation
+        // NOTE: After agentic browsing, call comet_connect first for reliable results
+        if (newChat) {
+          // Find Perplexity tab
+          const targets = await cometClient.listTargets();
+          const perplexityTab = targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai'));
 
-        // Start fresh conversation if requested, or navigate if not on Perplexity
-        if (newChat || !isOnPerplexity) {
+          if (perplexityTab) {
+            await cometClient.connect(perplexityTab.id);
+          }
+
+          // Navigate to Perplexity home
           await cometClient.navigate("https://www.perplexity.ai/", true);
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for page load
+          await new Promise(resolve => setTimeout(resolve, 1500));
+
+          // Wait for input element
+          for (let i = 0; i < 6; i++) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            const checkResult = await cometClient.evaluate(`
+              document.querySelector('[contenteditable="true"]') !== null ||
+              document.querySelector('textarea') !== null
+            `);
+            if (checkResult.result.value) break;
+          }
+        } else {
+          // Not newChat - just ensure we're on Perplexity
+          const tabs = await cometClient.listTabsCategorized();
+          if (tabs.main) {
+            await cometClient.connect(tabs.main.id);
+          }
+
+          const urlResult = await cometClient.evaluate('window.location.href');
+          const currentUrl = urlResult.result.value as string;
+          const isOnPerplexity = currentUrl?.includes('perplexity.ai');
+
+          if (!isOnPerplexity) {
+            await cometClient.navigate("https://www.perplexity.ai/", true);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
         }
+
+        // Capture old response state BEFORE sending prompt (for follow-up detection)
+        const oldStateResult = await cometClient.evaluate(`
+          (() => {
+            const proseEls = document.querySelectorAll('[class*="prose"]');
+            const lastProse = proseEls[proseEls.length - 1];
+            return {
+              count: proseEls.length,
+              lastText: lastProse ? lastProse.innerText.substring(0, 100) : ''
+            };
+          })()
+        `);
+        const oldState = oldStateResult.result.value as { count: number; lastText: string };
+
+        // Verify we're on Perplexity before sending
+        const urlCheck = await cometClient.evaluate('window.location.href');
+        const currentUrl = urlCheck.result.value as string;
+        console.error(`[comet_ask] Current URL before sendPrompt: ${currentUrl}`);
+        if (!currentUrl?.includes('perplexity.ai')) {
+          console.error(`[comet_ask] ERROR: Not on Perplexity! Reconnecting...`);
+          const tabs = await cometClient.listTargets();
+          const perplexityTab = tabs.find(t => t.type === 'page' && t.url.includes('perplexity.ai'));
+          if (perplexityTab) {
+            await cometClient.connect(perplexityTab.id);
+            // Wait for page to be ready
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+
+        // Explicitly focus the input element before sendPrompt
+        await cometClient.evaluate(`
+          (() => {
+            const el = document.querySelector('[contenteditable="true"]') || document.querySelector('textarea');
+            if (el) {
+              el.focus();
+              el.click();
+            }
+          })()
+        `);
+        await new Promise(resolve => setTimeout(resolve, 300));
 
         // Send the prompt
         await cometAI.sendPrompt(prompt);
@@ -174,9 +244,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const startTime = Date.now();
         const stepsCollected: string[] = [];
         let sawWorkingState = false;
+        let sawNewResponse = false;
 
         while (Date.now() - startTime < wait) {
           await new Promise(resolve => setTimeout(resolve, 2000)); // Poll every 2s
+
+          // Check if we have a NEW response (more prose elements or different text)
+          const currentStateResult = await cometClient.evaluate(`
+            (() => {
+              const proseEls = document.querySelectorAll('[class*="prose"]');
+              const lastProse = proseEls[proseEls.length - 1];
+              return {
+                count: proseEls.length,
+                lastText: lastProse ? lastProse.innerText.substring(0, 100) : ''
+              };
+            })()
+          `);
+          const currentState = currentStateResult.result.value as { count: number; lastText: string };
+
+          // Detect new response
+          if (!sawNewResponse) {
+            if (currentState.count > oldState.count ||
+                (currentState.lastText && currentState.lastText !== oldState.lastText)) {
+              sawNewResponse = true;
+            }
+          }
 
           const status = await cometAI.getAgentStatus();
 
@@ -192,8 +284,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             sawWorkingState = true;
           }
 
-          // Task completed - return result directly
-          if (status.status === 'completed' && (sawWorkingState || Date.now() - startTime > 8000)) {
+          // Task completed - return result directly (but only if we saw a NEW response)
+          if (status.status === 'completed' && sawNewResponse) {
             return { content: [{ type: "text", text: status.response || 'Task completed (no response text extracted)' }] };
           }
         }

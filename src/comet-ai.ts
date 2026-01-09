@@ -122,9 +122,10 @@ export class CometAI {
       })()
     `);
 
-    const typed = (result.result.value as { success: boolean })?.success;
+    const typed = (result.result.value as { success: boolean; text?: string })?.success;
+    console.error(`[sendPrompt] evaluate result:`, JSON.stringify(result.result.value));
     if (!typed) {
-      throw new Error("Failed to type into input element");
+      throw new Error(`Failed to type into input element. Result: ${JSON.stringify(result.result.value)}`);
     }
 
     // Submit the prompt
@@ -258,33 +259,44 @@ export class CometAI {
 
   /**
    * Wait for Comet AI to finish responding
+   * @param oldState - Previous state to detect when NEW response appears (for follow-ups)
    */
-  async waitForResponse(timeout: number = 30000): Promise<CometAIResponse> {
+  async waitForResponse(timeout: number = 30000, oldState?: { count: number; lastText: string }): Promise<CometAIResponse> {
     const startTime = Date.now();
     let lastText = "";
     let stableCount = 0;
+    let foundNewResponse = !oldState; // If no oldState, we're in newChat mode
 
     // Wait for page to start loading response
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     while (Date.now() - startTime < timeout) {
-      // Get response text from Perplexity's answer area
+      // Get response text from Perplexity's answer area - LAST prose element for conversations
       const result = await cometClient.evaluate(`
         (() => {
-          // Look for the main answer content
-          const proseEl = document.querySelector('[class*="prose"]');
-          if (proseEl) return proseEl.innerText;
-
-          // Alternative: look for answer section
-          const mainText = document.body.innerText;
-          const answerMatch = mainText.match(/Reviewed \\d+ sources[\\s\\S]*?(?=Related|Ask a follow-up|$)/);
-          if (answerMatch) return answerMatch[0];
-
-          return "";
+          const proseEls = document.querySelectorAll('[class*="prose"]');
+          const count = proseEls.length;
+          const lastProse = proseEls[proseEls.length - 1];
+          const text = lastProse ? lastProse.innerText : '';
+          return { count, text };
         })()
       `);
 
-      const currentText = (result.result.value as string) || "";
+      const current = result.result.value as { count: number; text: string };
+      const currentText = current.text || "";
+
+      // For follow-ups: wait until we see a NEW response (more elements or different text)
+      if (!foundNewResponse && oldState) {
+        if (current.count > oldState.count ||
+            (currentText.length > 0 && !currentText.startsWith(oldState.lastText.substring(0, 50)))) {
+          foundNewResponse = true;
+          stableCount = 0; // Reset stability counter for new response
+        } else {
+          // Still seeing old response, keep waiting
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+      }
 
       // Check if response has stabilized (text same for 3 consecutive checks)
       if (currentText.length > 0 && currentText === lastText) {
@@ -317,12 +329,26 @@ export class CometAI {
    * Send prompt and wait for response
    */
   async ask(prompt: string, timeout: number = 30000): Promise<CometAIResponse> {
+    // Capture the OLD response before sending (for follow-up detection)
+    const oldResponseResult = await cometClient.evaluate(`
+      (() => {
+        // Get count of prose elements to detect when new one appears
+        const proseEls = document.querySelectorAll('[class*="prose"]');
+        const lastProse = proseEls[proseEls.length - 1];
+        return {
+          count: proseEls.length,
+          lastText: lastProse ? lastProse.innerText.substring(0, 200) : ''
+        };
+      })()
+    `);
+    const oldState = oldResponseResult.result.value as { count: number; lastText: string };
+
     await this.sendPrompt(prompt);
 
     // Wait a bit for the response to start
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    return this.waitForResponse(timeout);
+    return this.waitForResponse(timeout, oldState);
   }
 
   /**
@@ -518,12 +544,10 @@ export class CometAI {
             }
           }
 
-          // Take the LONGEST valid prose element (most content = main answer)
-          // This works better than "last" because summaries at the bottom are shorter
+          // Take the LAST valid prose element (most recent answer in conversation)
+          // In multi-turn conversations, we want the newest response
           if (validProseTexts.length > 0) {
-            response = validProseTexts.reduce((longest, current) =>
-              current.length > longest.length ? current : longest
-            );
+            response = validProseTexts[validProseTexts.length - 1];
           }
 
           // Strategy 2: Look for specific answer text patterns

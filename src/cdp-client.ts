@@ -663,14 +663,27 @@ export class CometCDPClient {
   }
 
   /**
-   * Close a tab
+   * Close a tab using CDP Target.closeTarget
    */
-  async closeTab(targetId: string): Promise<void> {
-    const response = await fetch(
-      `http://localhost:${this.state.port}/json/close/${targetId}`
-    );
-    if (!response.ok) {
-      throw new Error(`Failed to close tab: ${response.status}`);
+  async closeTab(targetId: string): Promise<boolean> {
+    try {
+      // Try CDP method first (more reliable)
+      if (this.client) {
+        const result = await this.client.Target.closeTarget({ targetId });
+        return result.success;
+      }
+    } catch {
+      // Fall back to HTTP endpoint
+    }
+
+    // Fallback: HTTP endpoint
+    try {
+      const response = await fetch(
+        `http://localhost:${this.state.port}/json/close/${targetId}`
+      );
+      return response.ok;
+    } catch {
+      return false;
     }
   }
 
