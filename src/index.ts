@@ -2,7 +2,7 @@
 
 // Comet Browser MCP Server
 // Claude Code ↔ Perplexity Comet bidirectional interaction
-// Simplified to 6 essential tools
+// 7 tools: 6 browsing + 1 tab groups
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -17,8 +17,13 @@ import { cometAI } from "./comet-ai.js";
 const TOOLS: Tool[] = [
   {
     name: "comet_connect",
-    description: "Connect to Comet browser (auto-starts if needed)",
-    inputSchema: { type: "object", properties: {} },
+    description: "Connect to Comet browser (auto-starts if needed). Preserves all existing tabs and tab groups.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        clean: { type: "boolean", description: "Close ungrouped non-Perplexity tabs (default: false). Tabs in groups are always preserved." },
+      },
+    },
   },
   {
     name: "comet_ask",
@@ -62,6 +67,50 @@ const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: "comet_tab_groups",
+    description:
+      "Manage Chrome tab groups in Comet browser. Requires the Comet Tab Groups Bridge extension (load unpacked from extension/ dir). " +
+      "Actions: list (all groups), list_tabs (all tabs with group info), create (new group from tab IDs), " +
+      "update (rename/recolor/collapse), move (reorder), ungroup (remove tabs from group), delete (ungroup all tabs in a group).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "list_tabs", "create", "update", "move", "ungroup", "delete"],
+          description: "The tab group operation to perform",
+        },
+        tabIds: {
+          type: "array",
+          items: { type: "number" },
+          description: "Tab IDs (for create, ungroup)",
+        },
+        groupId: {
+          type: "number",
+          description: "Group ID (for update, move, delete)",
+        },
+        title: {
+          type: "string",
+          description: "Group title (for create, update)",
+        },
+        color: {
+          type: "string",
+          enum: ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"],
+          description: "Group color (for create, update)",
+        },
+        collapsed: {
+          type: "boolean",
+          description: "Collapse/expand group (for update)",
+        },
+        index: {
+          type: "number",
+          description: "Position index (for move)",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 const server = new Server(
@@ -77,39 +126,79 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "comet_connect": {
+        const clean = (args?.clean as boolean) || false;
+
         // Auto-start Comet with debug port (will restart if running without it)
         const startResult = await cometClient.startComet(9222);
 
-        // Get all tabs and clean up - close all except one
+        // List all targets — observe, don't destroy
         const targets = await cometClient.listTargets();
         const pageTabs = targets.filter(t => t.type === 'page');
 
-        // Close extra tabs, keep only one
-        if (pageTabs.length > 1) {
-          for (let i = 1; i < pageTabs.length; i++) {
+        // Find an existing Perplexity tab to connect to
+        const perplexityTab = pageTabs.find(t => t.url?.includes('perplexity.ai'));
+        let connectedTo: string;
+        let connectedTabId: string;
+
+        if (perplexityTab) {
+          await cometClient.connect(perplexityTab.id);
+          connectedTo = "existing Perplexity tab";
+          connectedTabId = perplexityTab.id;
+        } else if (pageTabs.length > 0) {
+          // No Perplexity tab — create a new one without disturbing existing tabs
+          const newTab = await cometClient.newTab("https://www.perplexity.ai/");
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          await cometClient.connect(newTab.id);
+          connectedTo = "new Perplexity tab";
+          connectedTabId = newTab.id;
+        } else {
+          // No tabs at all
+          const newTab = await cometClient.newTab("https://www.perplexity.ai/");
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          await cometClient.connect(newTab.id);
+          connectedTo = "new Perplexity tab (browser was empty)";
+          connectedTabId = newTab.id;
+        }
+
+        // Optional cleanup: only close ungrouped non-Perplexity tabs
+        let cleanedCount = 0;
+        if (clean && pageTabs.length > 1) {
+          // Get tab group info to protect grouped tabs
+          let groupedUrls = new Set<string>();
+          try {
+            const { tabGroupsClient } = await import("./tab-groups.js");
+            const allTabs = await tabGroupsClient.listTabs();
+            for (const t of allTabs) {
+              if (t.groupId !== -1 && t.url) groupedUrls.add(t.url);
+            }
+          } catch {
+            // Extension not available — can't determine groups, skip cleanup for safety
+            const groupInfo = '';
+            return { content: [{ type: "text", text: `${startResult}\nConnected to ${connectedTo} (${pageTabs.length} tabs preserved — clean skipped, tab groups extension not available)` }] };
+          }
+
+          for (const tab of pageTabs) {
+            if (tab.id === connectedTabId) continue;
+            if (tab.url?.includes('perplexity.ai')) continue;
+            if (groupedUrls.has(tab.url)) continue;
             try {
-              await cometClient.closeTab(pageTabs[i].id);
+              await cometClient.closeTab(tab.id);
+              cleanedCount++;
             } catch { /* ignore */ }
           }
         }
 
-        // Get fresh tab list
-        const freshTargets = await cometClient.listTargets();
-        const anyPage = freshTargets.find(t => t.type === 'page');
+        // Get group count for status message
+        let groupInfo = '';
+        try {
+          const { tabGroupsClient } = await import("./tab-groups.js");
+          const groups = await tabGroupsClient.listGroups();
+          groupInfo = `, ${groups.length} groups`;
+        } catch { /* extension not available */ }
 
-        if (anyPage) {
-          await cometClient.connect(anyPage.id);
-          // Always navigate to Perplexity home for clean state
-          await cometClient.navigate("https://www.perplexity.ai/", true);
-          await new Promise(resolve => setTimeout(resolve, 1500));
-          return { content: [{ type: "text", text: `${startResult}\nConnected to Perplexity (cleaned ${pageTabs.length - 1} old tabs)` }] };
-        }
-
-        // No tabs at all - create a new one
-        const newTab = await cometClient.newTab("https://www.perplexity.ai/");
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for page load
-        await cometClient.connect(newTab.id);
-        return { content: [{ type: "text", text: `${startResult}\nCreated new tab and navigated to Perplexity` }] };
+        const tabCount = pageTabs.length - cleanedCount;
+        const cleanMsg = cleanedCount > 0 ? `, cleaned ${cleanedCount} ungrouped tabs` : '';
+        return { content: [{ type: "text", text: `${startResult}\nConnected to ${connectedTo} (${tabCount} tabs${groupInfo} preserved${cleanMsg})` }] };
       }
 
       case "comet_ask": {
@@ -129,27 +218,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           .replace(/\s+/g, ' ')         // Collapse multiple spaces
           .trim();
 
-        // For newChat: full reset (same as comet_connect) to handle post-agentic state
+        // For newChat: open a fresh Perplexity tab (preserves existing tabs)
         if (newChat) {
-          // Clean up extra tabs (fixes CDP state after agentic browsing)
-          const targets = await cometClient.listTargets();
-          const pageTabs = targets.filter(t => t.type === 'page');
-          if (pageTabs.length > 1) {
-            for (let i = 1; i < pageTabs.length; i++) {
-              try { await cometClient.closeTab(pageTabs[i].id); } catch { /* ignore */ }
-            }
-          }
-
-          // Fresh connect to remaining tab
-          const freshTargets = await cometClient.listTargets();
-          const mainTab = freshTargets.find(t => t.type === 'page');
-          if (mainTab) {
-            await cometClient.connect(mainTab.id);
-          }
-
-          // Navigate to Perplexity home
-          await cometClient.navigate("https://www.perplexity.ai/", true);
-          await new Promise(resolve => setTimeout(resolve, 1500));
+          const newTab = await cometClient.newTab("https://www.perplexity.ai/");
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          await cometClient.connect(newTab.id);
         } else {
           // Not newChat - just ensure we're on Perplexity
           const tabs = await cometClient.listTabsCategorized();
@@ -418,6 +491,134 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{ type: "text", text: `Failed to switch mode: ${clickResult.error}` }],
             isError: true,
           };
+        }
+      }
+
+      case "comet_tab_groups": {
+        const { tabGroupsClient } = await import("./tab-groups.js");
+        const action = args?.action as string;
+        type TGColor = import("./tab-groups.js").TabGroupColor;
+
+        try {
+          switch (action) {
+            case "list": {
+              const groups = await tabGroupsClient.listGroups();
+              if (groups.length === 0) {
+                return { content: [{ type: "text", text: "No tab groups found." }] };
+              }
+              const lines = groups.map(
+                (g) => `[${g.id}] "${g.title || "(untitled)"}" (${g.color}${g.collapsed ? ", collapsed" : ""})`
+              );
+              return { content: [{ type: "text", text: `Tab groups:\n${lines.join("\n")}` }] };
+            }
+
+            case "list_tabs": {
+              const tabs = await tabGroupsClient.listTabs();
+              const lines = tabs.map(
+                (t) => `[tab:${t.id}] group:${t.groupId === -1 ? "none" : t.groupId} "${t.title}" ${t.url}`
+              );
+              return { content: [{ type: "text", text: `Tabs (${tabs.length}):\n${lines.join("\n")}` }] };
+            }
+
+            case "create": {
+              const tabIds = args?.tabIds as number[];
+              if (!tabIds || tabIds.length === 0) {
+                return { content: [{ type: "text", text: "Error: tabIds required for create" }], isError: true };
+              }
+              const result = await tabGroupsClient.createGroup({
+                tabIds,
+                title: args?.title as string | undefined,
+                color: args?.color as TGColor | undefined,
+              });
+              return {
+                content: [{
+                  type: "text",
+                  text: `Created group ${result.groupId}: "${result.group.title || "(untitled)"}" (${result.group.color})`,
+                }],
+              };
+            }
+
+            case "update": {
+              const groupId = args?.groupId as number;
+              if (groupId === undefined) {
+                return { content: [{ type: "text", text: "Error: groupId required for update" }], isError: true };
+              }
+              const group = await tabGroupsClient.updateGroup({
+                groupId,
+                title: args?.title as string | undefined,
+                color: args?.color as TGColor | undefined,
+                collapsed: args?.collapsed as boolean | undefined,
+              });
+              return {
+                content: [{
+                  type: "text",
+                  text: `Updated group ${group.id}: "${group.title || "(untitled)"}" (${group.color}${group.collapsed ? ", collapsed" : ""})`,
+                }],
+              };
+            }
+
+            case "move": {
+              const groupId = args?.groupId as number;
+              const index = args?.index as number;
+              if (groupId === undefined || index === undefined) {
+                return { content: [{ type: "text", text: "Error: groupId and index required for move" }], isError: true };
+              }
+              const group = await tabGroupsClient.moveGroup(groupId, index);
+              return { content: [{ type: "text", text: `Moved group ${group.id} to index ${index}` }] };
+            }
+
+            case "ungroup": {
+              const tabIds = args?.tabIds as number[];
+              if (!tabIds || tabIds.length === 0) {
+                return { content: [{ type: "text", text: "Error: tabIds required for ungroup" }], isError: true };
+              }
+              await tabGroupsClient.ungroupTabs(tabIds);
+              return { content: [{ type: "text", text: `Ungrouped ${tabIds.length} tab(s)` }] };
+            }
+
+            case "delete": {
+              const groupId = args?.groupId as number;
+              if (groupId === undefined) {
+                return { content: [{ type: "text", text: "Error: groupId required for delete" }], isError: true };
+              }
+              const tabs = await tabGroupsClient.listTabs();
+              const groupTabs = tabs.filter((t) => t.groupId === groupId);
+              if (groupTabs.length === 0) {
+                return { content: [{ type: "text", text: `No tabs found in group ${groupId}` }] };
+              }
+              await tabGroupsClient.ungroupTabs(groupTabs.map((t) => t.id));
+              return {
+                content: [{
+                  type: "text",
+                  text: `Deleted group ${groupId} (ungrouped ${groupTabs.length} tab(s))`,
+                }],
+              };
+            }
+
+            default:
+              return {
+                content: [{ type: "text", text: `Unknown action: ${action}. Use: list, list_tabs, create, update, move, ungroup, delete` }],
+                isError: true,
+              };
+          }
+        } catch (tgError) {
+          const msg = tgError instanceof Error ? tgError.message : String(tgError);
+          if (msg.includes("extension") || msg.includes("service worker") || msg.includes("Bridge")) {
+            return {
+              content: [{
+                type: "text",
+                text: `Tab Groups Bridge extension not connected.\n\n` +
+                  `To use tab groups:\n` +
+                  `1. Open comet://extensions in Comet\n` +
+                  `2. Enable "Developer mode"\n` +
+                  `3. Click "Load unpacked" and select the extension/ folder from comet-mcp\n` +
+                  `4. Try again\n\n` +
+                  `Error: ${msg}`,
+              }],
+              isError: true,
+            };
+          }
+          throw tgError;
         }
       }
 

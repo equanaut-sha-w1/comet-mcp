@@ -72,6 +72,49 @@ Claude: [Comet handles the login flow and navigation]
 | `comet_stop` | Stop current task |
 | `comet_screenshot` | Capture current page |
 | `comet_mode` | Switch modes: search, research, labs, learn |
+| `comet_tab_groups` | Manage Chrome tab groups (list, create, update, delete) |
+
+## Tab Groups
+
+Control Comet's native Chrome tab groups programmatically — create, rename, recolor, collapse, and delete groups.
+
+**Requires a one-time extension install** (included in the `extension/` directory):
+
+1. Open `comet://extensions` in Comet
+2. Enable **Developer mode** (top-right toggle)
+3. Click **Load unpacked** → select the `extension/` folder from this repo
+4. The "Comet Tab Groups Bridge" extension appears
+
+**How it works**: CDP cannot access Chrome's tab group API. The included MV3 extension provides `tabGroups` permission, and comet-mcp connects to the extension's service worker via CDP to evaluate `chrome.tabGroups.*` calls directly. No native messaging host needed.
+
+```
+Claude Code → MCP Server → CDP → Extension Service Worker → chrome.tabGroups API → Comet UI
+```
+
+**Available actions**:
+
+| Action | Parameters | Description |
+|--------|-----------|-------------|
+| `list` | — | List all tab groups (id, title, color, collapsed state) |
+| `list_tabs` | — | List all tabs with their group assignments |
+| `create` | `tabIds`, `title?`, `color?` | Group tabs and optionally name/color them |
+| `update` | `groupId`, `title?`, `color?`, `collapsed?` | Change group properties |
+| `move` | `groupId`, `index` | Reorder a group |
+| `ungroup` | `tabIds` | Remove tabs from their groups |
+| `delete` | `groupId` | Dissolve a group (tabs remain open) |
+
+**Colors**: `grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`
+
+## HTTP REST Bridge
+
+For environments that can't use MCP directly (e.g., sandboxed VMs), an HTTP server exposes all tools as REST endpoints:
+
+```bash
+npm run build && npm run http
+# Starts on http://localhost:3456
+```
+
+See [COWORK-BRIDGE.md](COWORK-BRIDGE.md) for full endpoint documentation.
 
 ## How It Works
 

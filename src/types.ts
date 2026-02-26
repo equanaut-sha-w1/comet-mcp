@@ -49,3 +49,34 @@ export interface CometState {
   currentUrl?: string;
   activeTabId?: string;
 }
+
+// ---- Tab Groups (via extension service worker) ----
+
+export type TabGroupColor =
+  | "grey"
+  | "blue"
+  | "red"
+  | "yellow"
+  | "green"
+  | "pink"
+  | "purple"
+  | "cyan"
+  | "orange";
+
+export interface TabGroup {
+  id: number;
+  collapsed: boolean;
+  color: TabGroupColor;
+  title: string;
+  windowId: number;
+}
+
+export interface TabInfo {
+  id: number;
+  groupId: number; // -1 if ungrouped
+  windowId: number;
+  index: number;
+  title: string;
+  url: string;
+  active: boolean;
+}
