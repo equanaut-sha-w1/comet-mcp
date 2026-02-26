@@ -3,7 +3,7 @@
   "name": "Comet Tab Groups Bridge",
   "version": "1.0.0",
   "description": "Bridges chrome.tabGroups API for comet-mcp CDP control",
-  "permissions": ["tabGroups", "tabs"],
+  "permissions": ["tabGroups", "tabs", "alarms"],
   "background": {
     "service_worker": "background.js"
   },

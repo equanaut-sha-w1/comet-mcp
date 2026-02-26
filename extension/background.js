@@ -1,18 +1,17 @@
 // Comet Tab Groups Bridge — service worker
 // Marker for CDP discovery: comet-mcp scans service workers for this flag
 self.__COMET_TAB_GROUPS_BRIDGE__ = true;
-self.__COMET_TAB_GROUPS_VERSION__ = "1.0.0";
+self.__COMET_TAB_GROUPS_VERSION__ = "1.0.1";
 
-// Keep service worker alive — Chromium kills idle workers after ~30s.
-// CDP evaluations reset the timer, but a keepalive ensures we survive gaps.
-let keepAliveInterval = null;
+// Keep service worker alive — Chromium kills idle MV3 workers after ~30s.
+// setInterval does NOT prevent termination. The Chrome Alarms API is the
+// officially supported mechanism to wake service workers periodically.
+const KEEPALIVE_ALARM = "keepalive";
 
-function startKeepAlive() {
-  if (keepAliveInterval) return;
-  keepAliveInterval = setInterval(() => {
-    // no-op heartbeat to reset idle timer
-  }, 25000);
-}
+chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // ~24s
 
-chrome.runtime.onInstalled.addListener(() => startKeepAlive());
-startKeepAlive();
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === KEEPALIVE_ALARM) {
+    // Heartbeat — keeps the service worker in CDP target list
+  }
+});
