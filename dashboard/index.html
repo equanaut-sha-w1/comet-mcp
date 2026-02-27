@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Comet Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-hover: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #484f58;
+    --tg-red: #f85149;
+    --tg-orange: #f0883e;
+    --tg-yellow: #d29922;
+    --tg-green: #3fb950;
+    --tg-blue: #58a6ff;
+    --tg-cyan: #39d2c0;
+    --tg-purple: #bc8cff;
+    --tg-pink: #f778ba;
+    --tg-grey: #8b949e;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.5px; }
+  .header-controls { display: flex; align-items: center; gap: 16px; }
+  .refresh-indicator { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .refresh-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tg-green); animation: pulse 2s infinite; }
+  .refresh-indicator.error .dot { background: var(--tg-red); animation: none; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* ── Tab Nav ── */
+  .tab-nav {
+    display: flex;
+    gap: 0;
+    padding: 0 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-btn {
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .tab-btn:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+  .tab-btn.active { color: var(--tg-blue); border-bottom-color: var(--tg-blue); }
+
+  /* ── Stats Bar ── */
+  .stats-bar {
+    display: flex;
+    gap: 20px;
+    padding: 10px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  .stat { display: flex; align-items: center; gap: 5px; }
+  .stat-value { font-weight: 600; color: var(--text); }
+  .stat-label { color: var(--text-muted); }
+
+  /* ── Views ── */
+  .view { display: none; min-height: calc(100vh - 140px); }
+  .view.active { display: block; }
+
+  /* ── Operations View ── */
+  .ops-layout { display: grid; grid-template-columns: 1fr 280px; gap: 0; min-height: calc(100vh - 140px); }
+  .ops-content { padding: 20px 24px; overflow-y: auto; }
+  .ops-sidebar { border-left: 1px solid var(--border); padding: 20px; background: var(--surface); overflow-y: auto; }
+
+  /* Window cards */
+  .window-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+  .window-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: rgba(255,255,255,0.02); border-bottom: 1px solid var(--border); }
+  .window-title { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .window-meta { font-size: 11px; color: var(--text-dim); }
+
+  /* Group rows */
+  .group-row { display: flex; align-items: center; padding: 10px 16px; border-bottom: 1px solid rgba(48,54,61,0.5); cursor: pointer; transition: background 0.15s; }
+  .group-row:hover { background: var(--surface-hover); }
+  .group-row:last-child { border-bottom: none; }
+  .group-color-dot { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; margin-right: 12px; }
+  .group-info { flex: 1; min-width: 0; }
+  .group-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .group-status { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+  .group-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 500; white-space: nowrap; margin-left: 8px; }
+  .group-tab-count { font-size: 12px; color: var(--text-dim); margin-left: 12px; flex-shrink: 0; }
+
+  /* Expanded tabs */
+  .group-tabs { display: none; padding: 0 16px 8px 40px; }
+  .group-tabs.expanded { display: block; }
+  .tab-item { display: flex; align-items: center; padding: 4px 0; font-size: 12px; color: var(--text-muted); }
+  .tab-item.active { color: var(--text); }
+  .tab-item .tab-icon { width: 14px; height: 14px; margin-right: 8px; flex-shrink: 0; opacity: 0.6; }
+  .tab-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .tab-url { font-size: 11px; color: var(--text-dim); margin-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+
+  /* Agent/Sidecar indicators */
+  .agent-indicator { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(240,136,62,0.15); color: var(--tg-orange); margin-left: 8px; }
+  .agent-indicator.idle { background: rgba(139,148,158,0.15); color: var(--text-muted); }
+  .agent-indicator .spinner { width: 10px; height: 10px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Ungrouped section */
+  .ungrouped-header { padding: 8px 16px; font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; }
+
+  /* Sidebar sections */
+  .sidebar-section { margin-bottom: 24px; }
+  .sidebar-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .legend-item { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 12px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  .legend-label { font-weight: 500; color: var(--text); min-width: 60px; }
+  .legend-desc { color: var(--text-muted); font-size: 11px; }
+
+  .sidecar-item { padding: 8px 10px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; font-size: 12px; }
+  .sidecar-url { color: var(--text-muted); word-break: break-all; font-size: 11px; margin-top: 4px; }
+  .sidecar-status { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
+  .sidecar-status.active { color: var(--tg-orange); }
+  .sidecar-status.idle { color: var(--text-dim); }
+
+  .lifecycle { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; color: var(--text-dim); padding: 6px 0; }
+  .lifecycle-step { padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); font-size: 10px; white-space: nowrap; }
+  .lifecycle-arrow { color: var(--text-dim); font-size: 10px; }
+
+  .thread-item { padding: 8px 10px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; font-size: 12px; }
+  .thread-query { color: var(--tg-blue); font-style: italic; font-size: 12px; }
+  .thread-url { font-size: 11px; color: var(--text-dim); margin-top: 3px; word-break: break-all; }
+
+  /* ── Infrastructure View ── */
+  .infra-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 20px 24px; }
+  .infra-grid.full { grid-template-columns: 1fr; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .card-header { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); display: flex; justify-content: space-between; align-items: center; }
+  .card-body { padding: 12px 16px; }
+
+  /* Display map */
+  .display-map { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .display-box { width: 100%; max-width: 400px; border: 2px solid var(--border); border-radius: 6px; padding: 16px; text-align: center; position: relative; }
+  .display-box.top { border-color: var(--tg-cyan); }
+  .display-box.bottom { border-color: var(--text-dim); }
+  .display-box .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
+  .display-box .name { font-size: 15px; font-weight: 600; margin: 4px 0; }
+  .display-box .detail { font-size: 12px; color: var(--text-dim); }
+  .display-box .disp-badge { position: absolute; top: 8px; right: 8px; font-size: 10px; padding: 2px 8px; border-radius: 8px; }
+  .disp-badge.comet { background: rgba(57,210,192,0.2); color: var(--tg-cyan); }
+  .disp-badge.user { background: rgba(139,148,158,0.2); color: var(--text-dim); }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,0.5); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover { background: rgba(88,166,255,0.04); }
+  .fs-yes { color: var(--tg-green); }
+  .fs-no { color: var(--tg-yellow); }
+
+  .services-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .service-chip { font-size: 11px; padding: 4px 10px; border-radius: 12px; background: rgba(48,54,61,0.6); color: var(--text); border: 1px solid var(--border); }
+  .service-chip.active { border-color: var(--tg-green); color: var(--tg-green); }
+
+  .cdp-type-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(48,54,61,0.4); font-size: 13px; }
+  .cdp-type-row:last-child { border-bottom: none; }
+  .cdp-type-name { color: var(--text); }
+  .cdp-type-count { color: var(--text-muted); font-weight: 600; }
+
+  /* ── Inventory View ── */
+  .inv-layout { padding: 20px 24px; }
+  .search-bar { display: flex; gap: 12px; margin-bottom: 16px; }
+  .search-bar input {
+    flex: 1; padding: 10px 14px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; outline: none;
+  }
+  .search-bar input:focus { border-color: var(--tg-blue); }
+  .search-bar input::placeholder { color: var(--text-dim); }
+
+  .inv-tab-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,0.4); font-size: 12px; }
+  .inv-tab-item:hover { background: var(--surface-hover); }
+  .inv-group-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+  .inv-group-name { font-size: 10px; color: var(--text-dim); min-width: 120px; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .inv-service-tag { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(88,166,255,0.1); color: var(--tg-blue); white-space: nowrap; }
+  .inv-active-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tg-green); flex-shrink: 0; }
+  .inv-tab-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .inv-tab-url { font-size: 11px; color: var(--text-dim); max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .inv-section-title { font-size: 13px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; padding: 12px 0 8px; border-bottom: 1px solid var(--border); margin-top: 16px; }
+  .inv-count { font-size: 12px; color: var(--text-dim); font-weight: 400; margin-left: 8px; }
+
+  /* ── Color badges ── */
+  .badge-red { background: rgba(248,81,73,0.15); color: var(--tg-red); }
+  .badge-orange { background: rgba(240,136,62,0.15); color: var(--tg-orange); }
+  .badge-yellow { background: rgba(210,153,34,0.15); color: var(--tg-yellow); }
+  .badge-green { background: rgba(63,185,80,0.15); color: var(--tg-green); }
+  .badge-blue { background: rgba(88,166,255,0.15); color: var(--tg-blue); }
+  .badge-cyan { background: rgba(57,210,192,0.15); color: var(--tg-cyan); }
+  .badge-purple { background: rgba(188,140,255,0.15); color: var(--tg-purple); }
+  .badge-pink { background: rgba(247,120,186,0.15); color: var(--tg-pink); }
+  .badge-grey { background: rgba(139,148,158,0.15); color: var(--tg-grey); }
+
+  .dot-red { background: var(--tg-red); }
+  .dot-orange { background: var(--tg-orange); }
+  .dot-yellow { background: var(--tg-yellow); }
+  .dot-green { background: var(--tg-green); }
+  .dot-blue { background: var(--tg-blue); }
+  .dot-cyan { background: var(--tg-cyan); }
+  .dot-purple { background: var(--tg-purple); }
+  .dot-pink { background: var(--tg-pink); }
+  .dot-grey { background: var(--tg-grey); }
+
+  /* ── Loading / Error ── */
+  .loading-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 60vh; color: var(--text-muted); gap: 16px; }
+  .loading-screen .spinner { width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--tg-blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  .error-banner { padding: 12px 24px; background: rgba(248,81,73,0.1); border-bottom: 1px solid rgba(248,81,73,0.3); color: var(--tg-red); font-size: 13px; display: none; }
+
+  select.ctrl { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+
+  @media (max-width: 900px) {
+    .ops-layout { grid-template-columns: 1fr; }
+    .ops-sidebar { border-left: none; border-top: 1px solid var(--border); }
+    .infra-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>COMET DASHBOARD</h1>
+    <div class="header-controls">
+      <select id="refreshRate" class="ctrl">
+        <option value="3000">3s</option>
+        <option value="5000" selected>5s</option>
+        <option value="10000">10s</option>
+        <option value="30000">30s</option>
+        <option value="0">Paused</option>
+      </select>
+      <div class="refresh-indicator" id="refreshIndicator">
+        <div class="dot"></div>
+        <span id="refreshText">Live</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="error-banner" id="errorBanner"></div>
+
+  <div class="tab-nav">
+    <button class="tab-btn active" data-view="operations">Operations</button>
+    <button class="tab-btn" data-view="infrastructure">Infrastructure</button>
+    <button class="tab-btn" data-view="inventory">Inventory</button>
+  </div>
+
+  <div class="stats-bar" id="statsBar">
+    <div class="stat"><span class="stat-value" id="statGroups">-</span><span class="stat-label">groups</span></div>
+    <div class="stat"><span class="stat-value" id="statTabs">-</span><span class="stat-label">tabs</span></div>
+    <div class="stat"><span class="stat-value" id="statWindows">-</span><span class="stat-label">windows</span></div>
+    <div class="stat"><span class="stat-value" id="statSidecars">-</span><span class="stat-label">sidecars</span></div>
+    <div class="stat"><span class="stat-value" id="statServices">-</span><span class="stat-label">services</span></div>
+    <div class="stat"><span class="stat-value" id="statTargets">-</span><span class="stat-label">CDP targets</span></div>
+    <div class="stat"><span class="stat-label" id="lastUpdate">--</span></div>
+  </div>
+
+  <!-- Operations View -->
+  <div class="view active" id="view-operations">
+    <div class="ops-layout">
+      <div class="ops-content" id="opsContent">
+        <div class="loading-screen" id="loadingScreen">
+          <div class="spinner"></div>
+          <div>Connecting to Comet Bridge...</div>
+        </div>
+      </div>
+      <div class="ops-sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-title">Color System</div>
+          <div class="legend-item"><div class="legend-dot dot-red"></div><span class="legend-label">Red</span><span class="legend-desc">Urgent / Blocked</span></div>
+          <div class="legend-item"><div class="legend-dot dot-orange"></div><span class="legend-label">Orange</span><span class="legend-desc">Agent Active</span></div>
+          <div class="legend-item"><div class="legend-dot dot-yellow"></div><span class="legend-label">Yellow</span><span class="legend-desc">In Progress</span></div>
+          <div class="legend-item"><div class="legend-dot dot-green"></div><span class="legend-label">Green</span><span class="legend-desc">Complete</span></div>
+          <div class="legend-item"><div class="legend-dot dot-blue"></div><span class="legend-label">Blue</span><span class="legend-desc">In Review</span></div>
+          <div class="legend-item"><div class="legend-dot dot-cyan"></div><span class="legend-label">Cyan</span><span class="legend-desc">Research</span></div>
+          <div class="legend-item"><div class="legend-dot dot-purple"></div><span class="legend-label">Purple</span><span class="legend-desc">Source of Truth</span></div>
+          <div class="legend-item"><div class="legend-dot dot-pink"></div><span class="legend-label">Pink</span><span class="legend-desc">Delegated</span></div>
+          <div class="legend-item"><div class="legend-dot dot-grey"></div><span class="legend-label">Grey</span><span class="legend-desc">Deferred / TBD</span></div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-title">Lifecycle</div>
+          <div class="lifecycle">
+            <span class="lifecycle-step badge-grey">TBD</span><span class="lifecycle-arrow">&rarr;</span>
+            <span class="lifecycle-step badge-cyan">Research</span><span class="lifecycle-arrow">&rarr;</span>
+            <span class="lifecycle-step badge-yellow">In Progress</span><span class="lifecycle-arrow">&rarr;</span>
+            <span class="lifecycle-step badge-orange">Agent</span><span class="lifecycle-arrow">&rarr;</span>
+            <span class="lifecycle-step badge-blue">Review</span><span class="lifecycle-arrow">&rarr;</span>
+            <span class="lifecycle-step badge-green">Complete</span>
+          </div>
+          <div class="lifecycle" style="margin-top:4px;">
+            <span class="lifecycle-step badge-red">Urgent</span>
+            <span style="font-size:10px;color:var(--text-dim);margin-left:4px;">overrides any stage</span>
+          </div>
+          <div class="lifecycle" style="margin-top:4px;">
+            <span class="lifecycle-step badge-purple">Source</span>
+            <span style="font-size:10px;color:var(--text-dim);margin-left:4px;">permanent, no lifecycle</span>
+          </div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-title">Sidecar Sessions</div>
+          <div id="sidecarList"><div style="font-size:12px;color:var(--text-dim);">Loading...</div></div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-title">Perplexity Threads</div>
+          <div id="threadList"><div style="font-size:12px;color:var(--text-dim);">Loading...</div></div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-title">Service Workers</div>
+          <div id="workerList"><div style="font-size:12px;color:var(--text-dim);">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Infrastructure View -->
+  <div class="view" id="view-infrastructure">
+    <div class="infra-grid" id="infraContent">
+      <div class="loading-screen"><div class="spinner"></div><div>Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- Inventory View -->
+  <div class="view" id="view-inventory">
+    <div class="inv-layout" id="invContent">
+      <div class="loading-screen"><div class="spinner"></div><div>Loading...</div></div>
+    </div>
+  </div>
+
+<script>
+const API_BASE = window.location.origin;
+const COLOR_STATUS = {
+  red: 'URGENT / BLOCKED', orange: 'AGENT ACTIVE', yellow: 'IN PROGRESS',
+  green: 'COMPLETE', blue: 'IN REVIEW', cyan: 'RESEARCH',
+  purple: 'SOURCE OF TRUTH', pink: 'DELEGATED', grey: 'DEFERRED / TBD'
+};
+
+let refreshInterval = null;
+let expandedGroups = new Set();
+let lastData = null;
+let currentView = 'operations';
+let searchQuery = '';
+
+// ── Service detection (ported from :5555) ──
+
+const SERVICE_PATTERNS = [
+  [/google\.com\/spreadsheets/, 'Google Sheets'],
+  [/docs\.google\.com\/document/, 'Google Docs'],
+  [/docs\.google\.com\/presentation/, 'Google Slides'],
+  [/drive\.google\.com/, 'Google Drive'],
+  [/calendar\.google\.com/, 'Google Calendar'],
+  [/mail\.google\.com/, 'Gmail'],
+  [/perplexity\.ai/, 'Perplexity AI'],
+  [/railway\.com|railway\.app/, 'Railway'],
+  [/github\.com/, 'GitHub'],
+  [/app\.carta\.com/, 'Carta'],
+  [/app\.slack\.com/, 'Slack'],
+  [/app\.box\.com/, 'Box'],
+  [/okta\.com/, 'Okta'],
+  [/knowbe4\.com/, 'KnowBe4'],
+  [/keepersecurity\.com/, 'Keeper'],
+  [/lastpass\.com/, 'LastPass'],
+  [/bolt\.new/, 'Bolt.new'],
+  [/grafana/, 'Grafana'],
+  [/datadog/, 'Datadog'],
+  [/sentry\.io/, 'Sentry'],
+  [/vercel\.com/, 'Vercel'],
+  [/codepen\.io/, 'CodePen'],
+  [/localhost:\d+/, 'localhost'],
+  [/chrome-extension/, 'Chrome Extension'],
+];
+
+function detectService(url) {
+  if (!url) return null;
+  for (const [re, name] of SERVICE_PATTERNS) {
+    if (re.test(url)) return name;
+  }
+  return null;
+}
+
+// ── Data fetching ──
+
+async function fetchAllData() {
+  const resp = await fetch(`${API_BASE}/api/dashboard-data`);
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+  const data = await resp.json();
+  return {
+    groups: data.groups || [],
+    tabs: data.tabs || [],
+    targets: data.targets || [],
+    windowGeometry: data.windowGeometry || [],
+  };
+}
+
+// ── Target classification ──
+
+function classifyTargets(targets) {
+  const pages = [], sidecars = [], serviceWorkers = [], iframes = [], others = [];
+  for (const t of targets) {
+    if (t.type === 'page') {
+      if (t.url && t.url.includes('perplexity.ai/sidecar')) sidecars.push(t);
+      else pages.push(t);
+    } else if (t.type === 'service_worker') {
+      serviceWorkers.push(t);
+    } else if (t.type === 'iframe') {
+      iframes.push(t);
+    } else {
+      others.push(t);
+    }
+  }
+  return { pages, sidecars, serviceWorkers, iframes, others };
+}
+
+function isSidecarActive(sc) {
+  return sc.url && /\/search\//.test(sc.url);
+}
+
+// ── Thread extraction ──
+
+function extractThreads(targets) {
+  return targets.filter(t =>
+    t.type === 'page' && t.url &&
+    (t.url.includes('perplexity.ai/search/') || t.url.includes('perplexity.ai/spaces/'))
+  );
+}
+
+// ── Window/group mapping ──
+
+function buildWindowMap(groups, tabs) {
+  const windowMap = new Map();
+  for (const g of groups) {
+    if (!windowMap.has(g.windowId)) windowMap.set(g.windowId, { groups: new Map(), ungrouped: [] });
+    windowMap.get(g.windowId).groups.set(g.id, { group: g, tabs: [] });
+  }
+  for (const tab of tabs) {
+    if (!windowMap.has(tab.windowId)) windowMap.set(tab.windowId, { groups: new Map(), ungrouped: [] });
+    const win = windowMap.get(tab.windowId);
+    if (tab.groupId !== -1 && win.groups.has(tab.groupId)) {
+      win.groups.get(tab.groupId).tabs.push(tab);
+    } else if (tab.groupId === -1) {
+      win.ungrouped.push(tab);
+    }
+  }
+  for (const [, win] of windowMap) {
+    for (const [, gData] of win.groups) gData.tabs.sort((a, b) => a.index - b.index);
+    win.ungrouped.sort((a, b) => a.index - b.index);
+  }
+  return windowMap;
+}
+
+// ── Helpers ──
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function shortenUrl(url, maxLen = 60) {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    let d = u.hostname + u.pathname;
+    return d.length > maxLen ? d.substring(0, maxLen) + '...' : d;
+  } catch { return url.substring(0, maxLen); }
+}
+
+function getDomain(url) {
+  if (!url) return '';
+  try { return new URL(url).hostname; } catch { return ''; }
+}
+
+function truncate(str, len) {
+  if (!str) return '';
+  return str.length > len ? str.slice(0, len) + '...' : str;
+}
+
+// ── View switching ──
+
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
+  if (lastData) renderView(lastData);
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchView(btn.dataset.view));
+});
+
+// ── Stats bar ──
+
+function renderStats(data) {
+  const { groups, tabs, targets } = data;
+  const classified = classifyTargets(targets);
+  const windowIds = new Set(tabs.map(t => t.windowId));
+  const services = new Set();
+  tabs.forEach(t => { const s = detectService(t.url); if (s) services.add(s); });
+
+  document.getElementById('statGroups').textContent = groups.length;
+  document.getElementById('statTabs').textContent = tabs.length;
+  document.getElementById('statWindows').textContent = windowIds.size;
+  document.getElementById('statSidecars').textContent = classified.sidecars.length;
+  document.getElementById('statServices').textContent = services.size;
+  document.getElementById('statTargets').textContent = targets.length;
+  document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+// ── Operations View ──
+
+function renderOperations(data) {
+  const { groups, tabs, targets } = data;
+  const classified = classifyTargets(targets);
+  const windowMap = buildWindowMap(groups, tabs);
+  const threads = extractThreads(targets);
+  const content = document.getElementById('opsContent');
+  const loading = document.getElementById('loadingScreen');
+  if (loading) loading.remove();
+
+  let html = '';
+  const sortedWindows = [...windowMap.entries()].sort((a, b) => a[0] - b[0]);
+
+  for (const [windowId, win] of sortedWindows) {
+    const groupCount = win.groups.size;
+    const tabCount = [...win.groups.values()].reduce((s, g) => s + g.tabs.length, 0) + win.ungrouped.length;
+
+    html += `<div class="window-card">`;
+    html += `<div class="window-header"><span class="window-title">Window ${windowId}</span><span class="window-meta">${groupCount} groups, ${tabCount} tabs</span></div>`;
+
+    for (const [groupId, gData] of win.groups) {
+      const g = gData.group;
+      const color = g.color || 'grey';
+      const status = COLOR_STATUS[color] || 'Unknown';
+      const isExpanded = expandedGroups.has(groupId);
+
+      html += `<div class="group-row" onclick="toggleGroup(${groupId})">`;
+      html += `<div class="group-color-dot dot-${color}"></div>`;
+      html += `<div class="group-info"><div class="group-name">${escapeHtml(g.title || '(untitled)')}</div><div class="group-status">${status}${g.collapsed ? ' (collapsed)' : ''}</div></div>`;
+      html += `<span class="group-badge badge-${color}">${color.toUpperCase()}</span>`;
+      html += `<span class="group-tab-count">${gData.tabs.length} tab${gData.tabs.length !== 1 ? 's' : ''}</span>`;
+      html += `</div>`;
+
+      html += `<div class="group-tabs ${isExpanded ? 'expanded' : ''}" id="group-${groupId}">`;
+      for (const tab of gData.tabs) {
+        const activeClass = tab.active ? ' active' : '';
+        const isSidecar = tab.url && tab.url.includes('perplexity.ai/sidecar');
+        html += `<div class="tab-item${activeClass}">`;
+        html += `<span class="tab-icon">${tab.active ? '&#9654;' : '&#9679;'}</span>`;
+        html += `<span class="tab-title">${escapeHtml(tab.title || '(no title)')}</span>`;
+        html += `<span class="tab-url">${escapeHtml(shortenUrl(tab.url))}</span>`;
+        if (isSidecar) {
+          const active = isSidecarActive(tab);
+          html += `<span class="agent-indicator ${active ? '' : 'idle'}">${active ? '<span class="spinner"></span>Thread' : 'Idle'}</span>`;
+        }
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+
+    if (win.ungrouped.length > 0) {
+      const isExpanded = expandedGroups.has(`ungrouped-${windowId}`);
+      html += `<div class="ungrouped-header" onclick="toggleGroup('ungrouped-${windowId}')">UNGROUPED (${win.ungrouped.length})</div>`;
+      html += `<div class="group-tabs ${isExpanded ? 'expanded' : ''}" id="group-ungrouped-${windowId}">`;
+      for (const tab of win.ungrouped) {
+        html += `<div class="tab-item${tab.active ? ' active' : ''}"><span class="tab-icon">${tab.active ? '&#9654;' : '&#9679;'}</span><span class="tab-title">${escapeHtml(tab.title || '(no title)')}</span><span class="tab-url">${escapeHtml(shortenUrl(tab.url))}</span></div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  content.innerHTML = html;
+
+  // Sidebar: Sidecars
+  let sidecarHtml = '';
+  if (classified.sidecars.length === 0) {
+    sidecarHtml = '<div style="font-size:12px;color:var(--text-dim);">No sidecar sessions detected</div>';
+  } else {
+    for (const sc of classified.sidecars) {
+      const active = isSidecarActive(sc);
+      sidecarHtml += `<div class="sidecar-item"><span class="sidecar-status ${active ? 'active' : 'idle'}">${active ? '&#9679; Active Thread' : '&#9675; Idle'}</span><div class="sidecar-url">${escapeHtml(sc.title || shortenUrl(sc.url, 80))}</div></div>`;
+    }
+  }
+  document.getElementById('sidecarList').innerHTML = sidecarHtml;
+
+  // Sidebar: Threads
+  let threadHtml = '';
+  if (threads.length === 0) {
+    threadHtml = '<div style="font-size:12px;color:var(--text-dim);">No active threads</div>';
+  } else {
+    for (const t of threads) {
+      threadHtml += `<div class="thread-item"><div class="thread-query">${escapeHtml(truncate(t.title, 80))}</div><div class="thread-url">${escapeHtml(truncate(t.url, 90))}</div></div>`;
+    }
+  }
+  document.getElementById('threadList').innerHTML = threadHtml;
+
+  // Sidebar: Workers
+  let swHtml = '';
+  if (classified.serviceWorkers.length === 0) {
+    swHtml = '<div style="font-size:12px;color:var(--text-dim);">No service workers</div>';
+  } else {
+    for (const sw of classified.serviceWorkers) {
+      const isComet = sw.url && sw.url.includes('fjaeblhelfklejofdfbglhfinipofeaa');
+      swHtml += `<div class="sidecar-item"><span class="sidecar-status ${isComet ? 'active' : 'idle'}">${isComet ? '&#9679; Tab Groups Bridge' : '&#9675; ' + getDomain(sw.url)}</span><div class="sidecar-url">${escapeHtml(shortenUrl(sw.url, 80))}</div></div>`;
+    }
+  }
+  document.getElementById('workerList').innerHTML = swHtml;
+}
+
+// ── Infrastructure View ──
+
+function renderInfrastructure(data) {
+  const { targets, windowGeometry } = data;
+  const classified = classifyTargets(targets);
+  const allTabs = [...data.tabs];
+  const services = new Set();
+  allTabs.forEach(t => { const s = detectService(t.url); if (s) services.add(s); });
+  // Also check CDP targets for services not in extension tabs
+  targets.forEach(t => { if (t.type === 'page') { const s = detectService(t.url); if (s) services.add(s); } });
+
+  const topWinCount = windowGeometry.filter(w => w.display.includes('top')).length;
+
+  let html = '';
+
+  // Row 1: Display map + Window geometry table
+  html += `<div class="infra-grid">`;
+
+  // Display arrangement
+  html += `<div class="card"><div class="card-header">Display Arrangement</div><div class="card-body">`;
+  html += `<div class="display-map">`;
+  html += `<div class="display-box top"><span class="disp-badge comet">COMET</span><div class="label">Secondary (Top)</div><div class="name">U28E590</div><div class="detail">3840x2160 (scaled 1920x1080 @ 30Hz)</div><div class="detail">${topWinCount} window${topWinCount !== 1 ? 's' : ''}</div></div>`;
+  html += `<div style="color:var(--text-dim);font-size:11px;">&#9650; stacked &#9660;</div>`;
+  html += `<div class="display-box bottom"><span class="disp-badge user">SHAWN</span><div class="label">Main (Bottom)</div><div class="name">SAMSUNG</div><div class="detail">3840x2160 (scaled 1920x1080 @ 60Hz)</div><div class="detail">Reserved for user</div></div>`;
+  html += `</div></div></div>`;
+
+  // Window geometry table
+  html += `<div class="card"><div class="card-header">Windows<span style="font-weight:400;color:var(--text-dim);font-size:11px;text-transform:none;letter-spacing:0;">${windowGeometry.length > 0 ? ' ' + windowGeometry.length + ' detected' : ' (AppleScript unavailable)'}</span></div><div class="card-body">`;
+  if (windowGeometry.length === 0) {
+    html += `<div style="font-size:12px;color:var(--text-dim);">No Comet windows detected via AppleScript</div>`;
+  } else {
+    html += `<table><thead><tr><th>#</th><th>Title</th><th>Size</th><th>Display</th><th>Full?</th></tr></thead><tbody>`;
+    for (const w of windowGeometry) {
+      const title = w.title
+        ? escapeHtml(truncate(w.title.replace(/ - Part of group .* - Comet$/, '').replace(/ - Comet$/, ''), 50))
+        : '<i style="color:var(--text-dim)">untitled</i>';
+      const fs = w.fullscreen ? '<span class="fs-yes">Yes</span>' : `<span class="fs-no">No (${w.w}x${w.h})</span>`;
+      html += `<tr><td>${w.index}</td><td>${title}</td><td style="white-space:nowrap">${w.w} x ${w.h}</td><td style="font-size:11px">${w.display}</td><td>${fs}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  html += `</div></div>`;
+
+  html += `</div>`; // end grid row 1
+
+  // Row 2: Service workers + Services detected
+  html += `<div class="infra-grid">`;
+
+  // Service workers
+  html += `<div class="card"><div class="card-header">Service Workers<span style="font-weight:400;color:var(--text-dim);font-size:11px;text-transform:none;letter-spacing:0;"> ${classified.serviceWorkers.length}</span></div><div class="card-body">`;
+  if (classified.serviceWorkers.length === 0) {
+    html += `<div style="font-size:12px;color:var(--text-dim);">No service workers</div>`;
+  } else {
+    for (const sw of classified.serviceWorkers) {
+      const isComet = sw.url && sw.url.includes('fjaeblhelfklejofdfbglhfinipofeaa');
+      html += `<div class="sidecar-item"><span class="sidecar-status ${isComet ? 'active' : 'idle'}">${isComet ? '&#9679; Tab Groups Bridge' : '&#9675; ' + getDomain(sw.url)}</span><div class="sidecar-url">${escapeHtml(shortenUrl(sw.url, 80))}</div></div>`;
+    }
+  }
+  html += `</div></div>`;
+
+  // Detected services
+  html += `<div class="card"><div class="card-header">Detected Services<span style="font-weight:400;color:var(--text-dim);font-size:11px;text-transform:none;letter-spacing:0;"> ${services.size}</span></div><div class="card-body">`;
+  html += `<div class="services-grid">`;
+  for (const s of [...services].sort()) {
+    html += `<span class="service-chip active">${escapeHtml(s)}</span>`;
+  }
+  if (services.size === 0) html += `<div style="font-size:12px;color:var(--text-dim);">No services detected</div>`;
+  html += `</div></div></div>`;
+
+  html += `</div>`; // end grid row 2
+
+  // Row 3: CDP target breakdown
+  html += `<div class="infra-grid full">`;
+  html += `<div class="card"><div class="card-header">CDP Target Breakdown<span style="font-weight:400;color:var(--text-dim);font-size:11px;text-transform:none;letter-spacing:0;"> ${targets.length} total</span></div><div class="card-body">`;
+
+  const typeCounts = {};
+  for (const t of targets) {
+    typeCounts[t.type] = (typeCounts[t.type] || 0) + 1;
+  }
+  for (const [type, count] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
+    html += `<div class="cdp-type-row"><span class="cdp-type-name">${escapeHtml(type)}</span><span class="cdp-type-count">${count}</span></div>`;
+  }
+  html += `</div></div></div>`;
+
+  document.getElementById('infraContent').innerHTML = html;
+}
+
+// ── Inventory View ──
+
+function renderInventory(data) {
+  const { groups, tabs, targets } = data;
+  const threads = extractThreads(targets);
+  const groupMap = new Map();
+  for (const g of groups) groupMap.set(g.id, g);
+
+  const q = searchQuery.toLowerCase();
+
+  let html = '';
+  html += `<div class="search-bar"><input type="text" id="invSearch" placeholder="Filter by title, URL, service, or group name..." value="${escapeHtml(searchQuery)}"></div>`;
+
+  // Tabs section
+  html += `<div class="inv-section-title">Tabs<span class="inv-count" id="invTabCount"></span></div>`;
+  html += `<div id="invTabList">`;
+
+  let visibleCount = 0;
+  for (const tab of tabs) {
+    const group = tab.groupId !== -1 ? groupMap.get(tab.groupId) : null;
+    const groupName = group ? (group.title || '(untitled)') : '';
+    const groupColor = group ? (group.color || 'grey') : '';
+    const service = detectService(tab.url) || '';
+    const title = tab.title || '(no title)';
+
+    // Filter
+    if (q) {
+      const haystack = `${title} ${tab.url || ''} ${service} ${groupName}`.toLowerCase();
+      if (!haystack.includes(q)) continue;
+    }
+
+    visibleCount++;
+    html += `<div class="inv-tab-item">`;
+    if (group) {
+      html += `<div class="inv-group-dot dot-${groupColor}"></div>`;
+      html += `<span class="inv-group-name">${escapeHtml(groupName)}</span>`;
+    } else {
+      html += `<div class="inv-group-dot" style="background:var(--text-dim);opacity:0.3;"></div>`;
+      html += `<span class="inv-group-name" style="opacity:0.4;">ungrouped</span>`;
+    }
+    if (service) html += `<span class="inv-service-tag">${escapeHtml(service)}</span>`;
+    if (tab.active) html += `<div class="inv-active-dot" title="Active tab"></div>`;
+    html += `<span class="inv-tab-title">${escapeHtml(title)}</span>`;
+    html += `<span class="inv-tab-url">${escapeHtml(shortenUrl(tab.url, 50))}</span>`;
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  // Threads section
+  html += `<div class="inv-section-title">Perplexity Threads<span class="inv-count"> ${threads.length}</span></div>`;
+  if (threads.length === 0) {
+    html += `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">No active threads</div>`;
+  } else {
+    for (const t of threads) {
+      if (q) {
+        const haystack = `${t.title || ''} ${t.url || ''}`.toLowerCase();
+        if (!haystack.includes(q)) continue;
+      }
+      html += `<div class="thread-item"><div class="thread-query">${escapeHtml(truncate(t.title, 80))}</div><div class="thread-url">${escapeHtml(truncate(t.url, 100))}</div></div>`;
+    }
+  }
+
+  const container = document.getElementById('invContent');
+  container.innerHTML = html;
+
+  // Show filtered count
+  const countEl = document.getElementById('invTabCount');
+  if (countEl) countEl.textContent = q ? `${visibleCount} / ${tabs.length}` : `${tabs.length}`;
+
+  // Bind search
+  const searchInput = document.getElementById('invSearch');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      searchQuery = e.target.value;
+      renderInventory(lastData);
+      // Restore focus & cursor
+      const newInput = document.getElementById('invSearch');
+      if (newInput) { newInput.focus(); newInput.selectionStart = newInput.selectionEnd = newInput.value.length; }
+    });
+  }
+}
+
+// ── Render dispatcher ──
+
+function renderView(data) {
+  renderStats(data);
+  if (currentView === 'operations') renderOperations(data);
+  else if (currentView === 'infrastructure') renderInfrastructure(data);
+  else if (currentView === 'inventory') renderInventory(data);
+}
+
+function toggleGroup(groupId) {
+  if (expandedGroups.has(groupId)) expandedGroups.delete(groupId);
+  else expandedGroups.add(groupId);
+  const el = document.getElementById(`group-${groupId}`);
+  if (el) el.classList.toggle('expanded');
+}
+
+// ── Refresh loop ──
+
+async function refresh() {
+  try {
+    lastData = await fetchAllData();
+    renderView(lastData);
+    showConnected();
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+function showConnected() {
+  document.getElementById('errorBanner').style.display = 'none';
+  document.getElementById('refreshIndicator').classList.remove('error');
+  document.getElementById('refreshText').textContent = 'Live';
+}
+
+function showError(msg) {
+  const banner = document.getElementById('errorBanner');
+  banner.textContent = `Connection error: ${msg}. Retrying...`;
+  banner.style.display = 'block';
+  document.getElementById('refreshIndicator').classList.add('error');
+  document.getElementById('refreshText').textContent = 'Error';
+}
+
+function startRefresh() {
+  const rate = parseInt(document.getElementById('refreshRate').value, 10);
+  if (refreshInterval) clearInterval(refreshInterval);
+  if (rate > 0) refreshInterval = setInterval(refresh, rate);
+}
+
+document.getElementById('refreshRate').addEventListener('change', startRefresh);
+
+// Initial load
+refresh();
+startRefresh();
+</script>
+</body>
+</html>

@@ -8,11 +8,94 @@
 //   Cowork VM -> Claude-in-Chrome MCP -> Chrome fetch('localhost:3456') -> this server -> CDP -> Comet
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { platform } from "node:os";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { cometClient } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
 import { tabGroupsClient } from "./tab-groups.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load dashboard HTML at startup (from ../dashboard/index.html relative to dist/)
+let dashboardHtml = "";
+try {
+  dashboardHtml = readFileSync(join(__dirname, "..", "dashboard", "index.html"), "utf-8");
+} catch {
+  dashboardHtml = "<html><body><h1>Dashboard not found</h1><p>Place dashboard/index.html in the project root.</p></body></html>";
+}
+
 const PORT = parseInt(process.env.COMET_HTTP_PORT || "3456", 10);
+
+// ---- Window geometry via AppleScript ----
+
+interface WindowGeometry {
+  index: number;
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  display: string;
+  fullscreen: boolean;
+}
+
+let geometryCache: { data: WindowGeometry[]; ts: number } = { data: [], ts: 0 };
+const GEOMETRY_CACHE_MS = 5000;
+
+function getWindowGeometry(): WindowGeometry[] {
+  if (platform() !== "darwin") return [];
+
+  const now = Date.now();
+  if (now - geometryCache.ts < GEOMETRY_CACHE_MS) return geometryCache.data;
+
+  const script = `
+set output to "["
+tell application "System Events"
+  if exists process "Comet" then
+    tell process "Comet"
+      set winCount to count of windows
+      repeat with i from 1 to winCount
+        set w to window i
+        set winPos to position of w
+        set winSize to size of w
+        set winTitle to name of w
+        if i > 1 then set output to output & ","
+        set output to output & "{\\"index\\":" & i
+        set output to output & ",\\"title\\":\\"" & winTitle & "\\""
+        set output to output & ",\\"x\\":" & (item 1 of winPos)
+        set output to output & ",\\"y\\":" & (item 2 of winPos)
+        set output to output & ",\\"w\\":" & (item 1 of winSize)
+        set output to output & ",\\"h\\":" & (item 2 of winSize)
+        set output to output & "}"
+      end repeat
+    end tell
+  end if
+end tell
+return output & "]"`;
+
+  try {
+    const raw = execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, {
+      timeout: 5000,
+      encoding: "utf-8",
+    }).trim();
+    const windows: Array<{ index: number; title: string; x: number; y: number; w: number; h: number }> = JSON.parse(raw);
+    const result: WindowGeometry[] = windows
+      .filter((w) => w.h >= 100 && w.w >= 100) // skip chrome UI frames
+      .map((w) => ({
+        ...w,
+        display: w.y < 0 ? "U28E590 (top)" : "SAMSUNG (main)",
+        fullscreen: w.w >= 1900 && w.h >= 1050,
+      }));
+    geometryCache = { data: result, ts: now };
+    return result;
+  } catch {
+    return geometryCache.data; // return stale on error
+  }
+}
 
 // Simple mutex to prevent concurrent CDP operations
 let busy = false;
@@ -429,6 +512,56 @@ async function handleTabGroupsDelete(res: ServerResponse, body: Record<string, u
   }
 }
 
+// ---- Targets & Dashboard handlers ----
+
+async function handleTargets(res: ServerResponse) {
+  try {
+    const response = await fetch(`http://127.0.0.1:9222/json/list`);
+    if (!response.ok) throw new Error(`CDP returned ${response.status}`);
+    const targets = await response.json();
+    json(res, { targets });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    errorJson(res, `Cannot reach CDP: ${message}`);
+  }
+}
+
+async function handleDashboardData(res: ServerResponse) {
+  // Window geometry runs outside mutex (no CDP needed)
+  const windowGeometry = getWindowGeometry();
+
+  const result = await withMutex(res, async () => {
+    // Fetch tab groups + tabs via extension (sequential to avoid CDP conflicts)
+    let groups: any[] = [];
+    let tabs: any[] = [];
+    let targets: any[] = [];
+
+    try {
+      groups = await tabGroupsClient.listGroups();
+    } catch { /* extension unavailable */ }
+
+    try {
+      tabs = await tabGroupsClient.listTabs();
+    } catch { /* extension unavailable */ }
+
+    try {
+      const response = await fetch(`http://127.0.0.1:9222/json/list`);
+      if (response.ok) targets = await response.json();
+    } catch { /* CDP unreachable */ }
+
+    return { groups, tabs, targets, windowGeometry };
+  });
+  if (result) json(res, result);
+}
+
+function serveDashboard(res: ServerResponse) {
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-cache",
+  });
+  res.end(dashboardHtml);
+}
+
 // ---- HTTP Server ----
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -447,7 +580,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   const path = url.pathname;
 
   try {
-    if (path === "/api/health" && req.method === "GET") {
+    if (path === "/dashboard" && req.method === "GET") {
+      serveDashboard(res);
+    } else if (path === "/api/targets" && req.method === "GET") {
+      await handleTargets(res);
+    } else if (path === "/api/dashboard-data" && req.method === "GET") {
+      await handleDashboardData(res);
+    } else if (path === "/api/health" && req.method === "GET") {
       json(res, { status: "ok", port: PORT, timestamp: new Date().toISOString() });
     } else if (path === "/api/connect" && req.method === "POST") {
       const body = await readBody(req);
@@ -489,14 +628,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
 server.listen(PORT, () => {
   console.log(`Comet Bridge HTTP API listening on port ${PORT}`);
+  console.log(`Dashboard: http://localhost:${PORT}/dashboard`);
   console.log(`Health check: http://localhost:${PORT}/api/health`);
   console.log(`\nEndpoints:`);
-  console.log(`  POST /api/connect     - Start Comet & connect`);
-  console.log(`  POST /api/ask         - Send prompt {prompt, newChat?, timeout?}`);
-  console.log(`  GET  /api/poll        - Check agent status`);
-  console.log(`  POST /api/stop        - Stop current agent`);
-  console.log(`  GET  /api/screenshot  - Capture page screenshot`);
-  console.log(`  POST /api/mode        - Get/set Perplexity mode {mode?}`);
+  console.log(`  GET  /dashboard        - Live monitoring dashboard`);
+  console.log(`  GET  /api/targets      - Raw CDP targets`);
+  console.log(`  POST /api/connect      - Start Comet & connect`);
+  console.log(`  POST /api/ask          - Send prompt {prompt, newChat?, timeout?}`);
+  console.log(`  GET  /api/poll         - Check agent status`);
+  console.log(`  POST /api/stop         - Stop current agent`);
+  console.log(`  GET  /api/screenshot   - Capture page screenshot`);
+  console.log(`  POST /api/mode         - Get/set Perplexity mode {mode?}`);
   console.log(`  GET  /api/tab-groups       - List all tab groups`);
   console.log(`  GET  /api/tab-groups/tabs  - List all tabs with group info`);
   console.log(`  POST /api/tab-groups       - Create group {tabIds, title?, color?}`);
