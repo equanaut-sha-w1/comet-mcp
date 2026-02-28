@@ -9,6 +9,7 @@
 // for the __COMET_TAB_GROUPS_BRIDGE__ marker set by background.js.
 
 import CDP from "chrome-remote-interface";
+import type { DormancyManager } from "./dormancy.js";
 
 // ---- Types ----
 
@@ -52,6 +53,27 @@ export interface UpdateGroupOptions {
   title?: string;
   color?: TabGroupColor;
   collapsed?: boolean;
+}
+
+// ---- Dormancy pre-check ----
+
+let dormancyManager: DormancyManager | null = null;
+
+export function setDormancyManager(dm: DormancyManager): void {
+  dormancyManager = dm;
+}
+
+async function ensureExtensionAlive(): Promise<void> {
+  if (!dormancyManager) return;
+  const alive = await dormancyManager.isExtensionAlive();
+  if (alive) return;
+  const result = await dormancyManager.wake();
+  if (!result.success) {
+    throw new Error(
+      `Extension service worker could not be revived (tried: ${result.technique}). ` +
+      `Visit chrome://extensions to verify the Comet Tab Groups Bridge extension is loaded.`
+    );
+  }
 }
 
 // ---- Client ----
@@ -153,6 +175,8 @@ export class TabGroupsClient {
    * Ensure a healthy connection; reconnect transparently if stale.
    */
   private async ensureConnected(): Promise<void> {
+    await ensureExtensionAlive();
+
     if (!this.client) {
       await this.connect();
       return;

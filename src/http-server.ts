@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { cometClient } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
 import { tabGroupsClient } from "./tab-groups.js";
+import { CometOrchestrator } from "./orchestrator.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -97,8 +98,11 @@ return output & "]"`;
   }
 }
 
-// Simple mutex to prevent concurrent CDP operations
-let busy = false;
+let orchestrator: CometOrchestrator | null = null;
+
+export function setOrchestrator(orch: CometOrchestrator): void {
+  orchestrator = orch;
+}
 
 function json(res: ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
@@ -129,23 +133,10 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   });
 }
 
-async function withMutex<T>(res: ServerResponse, fn: () => Promise<T>): Promise<T | null> {
-  if (busy) {
-    errorJson(res, "Server busy — another operation is in progress. Try again shortly.", 429);
-    return null;
-  }
-  busy = true;
-  try {
-    return await fn();
-  } finally {
-    busy = false;
-  }
-}
-
 // ---- Route handlers (mirrored from index.ts MCP tool handlers) ----
 
 async function handleConnect(res: ServerResponse, body: Record<string, unknown> = {}) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const clean = (body.clean as boolean) || false;
     const startResult = await cometClient.startComet(9222);
 
@@ -210,13 +201,13 @@ async function handleConnect(res: ServerResponse, body: Record<string, unknown> 
     const tabCount = pageTabs.length - cleanedCount;
     const cleanMsg = cleanedCount > 0 ? `, cleaned ${cleanedCount} ungrouped tabs` : "";
     return { message: `${startResult}\nConnected to ${connectedTo} (${tabCount} tabs${groupInfo} preserved${cleanMsg})` };
-  });
+  })();
 
-  if (result) json(res, result);
+  json(res, result);
 }
 
 async function handleAsk(res: ServerResponse, body: Record<string, unknown>) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     let prompt = body.prompt as string;
     const timeout = (body.timeout as number) || 15000;
     const newChat = (body.newChat as boolean) || false;
@@ -310,19 +301,17 @@ async function handleAsk(res: ServerResponse, body: Record<string, unknown>) {
       agentBrowsingUrl: finalStatus.agentBrowsingUrl || null,
       message: `Task in progress (${stepsCollected.length} steps so far). Use /api/poll to check progress.`,
     };
-  });
+  })();
 
-  if (result) {
-    if ("error" in result) {
-      errorJson(res, result.error as string, 400);
-    } else {
-      json(res, result);
-    }
+  if ("error" in result) {
+    errorJson(res, result.error as string, 400);
+  } else {
+    json(res, result);
   }
 }
 
 async function handlePoll(res: ServerResponse) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const status = await cometAI.getAgentStatus();
 
     if (status.status === "completed" && status.response) {
@@ -335,31 +324,31 @@ async function handlePoll(res: ServerResponse) {
       currentStep: status.currentStep || null,
       agentBrowsingUrl: status.agentBrowsingUrl || null,
     };
-  });
+  })();
 
-  if (result) json(res, result);
+  json(res, result);
 }
 
 async function handleStop(res: ServerResponse) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const stopped = await cometAI.stopAgent();
     return { stopped, message: stopped ? "Agent stopped" : "No active agent to stop" };
-  });
+  })();
 
-  if (result) json(res, result);
+  json(res, result);
 }
 
 async function handleScreenshot(res: ServerResponse) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const screenshot = await cometClient.screenshot("png");
     return { data: screenshot.data, mimeType: "image/png" };
-  });
+  })();
 
-  if (result) json(res, result);
+  json(res, result);
 }
 
 async function handleMode(res: ServerResponse, body: Record<string, unknown>) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const mode = body.mode as string | undefined;
 
     if (!mode) {
@@ -436,35 +425,33 @@ async function handleMode(res: ServerResponse, body: Record<string, unknown>) {
 
     if (result.success) return { mode, message: `Switched to ${mode} mode` };
     return { error: result.error || "Failed to switch mode" };
-  });
+  })();
 
-  if (result) {
-    if ("error" in result) {
-      errorJson(res, result.error as string, 400);
-    } else {
-      json(res, result);
-    }
+  if ("error" in result) {
+    errorJson(res, result.error as string, 400);
+  } else {
+    json(res, result);
   }
 }
 
 // ---- Tab Group route handlers ----
 
 async function handleTabGroupsList(res: ServerResponse) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     return { groups: await tabGroupsClient.listGroups() };
-  });
-  if (result) json(res, result);
+  })();
+  json(res, result);
 }
 
 async function handleTabGroupsListTabs(res: ServerResponse) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     return { tabs: await tabGroupsClient.listTabs() };
-  });
-  if (result) json(res, result);
+  })();
+  json(res, result);
 }
 
 async function handleTabGroupsCreate(res: ServerResponse, body: Record<string, unknown>) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const tabIds = body.tabIds as number[];
     if (!tabIds || tabIds.length === 0) return { error: "tabIds is required" };
     return await tabGroupsClient.createGroup({
@@ -472,15 +459,13 @@ async function handleTabGroupsCreate(res: ServerResponse, body: Record<string, u
       title: body.title as string | undefined,
       color: body.color as any,
     });
-  });
-  if (result) {
-    if (result && "error" in result) errorJson(res, result.error as string, 400);
-    else json(res, result);
-  }
+  })();
+  if ("error" in result) errorJson(res, result.error as string, 400);
+  else json(res, result);
 }
 
 async function handleTabGroupsUpdate(res: ServerResponse, body: Record<string, unknown>) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const groupId = body.groupId as number;
     if (groupId === undefined) return { error: "groupId is required" };
     return await tabGroupsClient.updateGroup({
@@ -489,15 +474,13 @@ async function handleTabGroupsUpdate(res: ServerResponse, body: Record<string, u
       color: body.color as any,
       collapsed: body.collapsed as boolean | undefined,
     });
-  });
-  if (result) {
-    if ("error" in result) errorJson(res, result.error as string, 400);
-    else json(res, result);
-  }
+  })();
+  if ("error" in result) errorJson(res, result.error as string, 400);
+  else json(res, result);
 }
 
 async function handleTabGroupsDelete(res: ServerResponse, body: Record<string, unknown>) {
-  const result = await withMutex(res, async () => {
+  const result = await (async () => {
     const groupId = body.groupId as number;
     if (groupId === undefined) return { error: "groupId is required" };
     const tabs = await tabGroupsClient.listTabs();
@@ -505,11 +488,9 @@ async function handleTabGroupsDelete(res: ServerResponse, body: Record<string, u
     if (groupTabs.length === 0) return { message: `No tabs found in group ${groupId}` };
     await tabGroupsClient.ungroupTabs(groupTabs.map((t) => t.id));
     return { deleted: true, ungroupedTabs: groupTabs.length };
-  });
-  if (result) {
-    if ("error" in result) errorJson(res, result.error as string, 400);
-    else json(res, result);
-  }
+  })();
+  if ("error" in result) errorJson(res, result.error as string, 400);
+  else json(res, result);
 }
 
 // ---- Targets & Dashboard handlers ----
@@ -527,11 +508,9 @@ async function handleTargets(res: ServerResponse) {
 }
 
 async function handleDashboardData(res: ServerResponse) {
-  // Window geometry runs outside mutex (no CDP needed)
   const windowGeometry = getWindowGeometry();
 
-  const result = await withMutex(res, async () => {
-    // Fetch tab groups + tabs via extension (sequential to avoid CDP conflicts)
+  const result = await (async () => {
     let groups: any[] = [];
     let tabs: any[] = [];
     let targets: any[] = [];
@@ -550,8 +529,8 @@ async function handleDashboardData(res: ServerResponse) {
     } catch { /* CDP unreachable */ }
 
     return { groups, tabs, targets, windowGeometry };
-  });
-  if (result) json(res, result);
+  })();
+  json(res, result);
 }
 
 function serveDashboard(res: ServerResponse) {
@@ -587,7 +566,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     } else if (path === "/api/dashboard-data" && req.method === "GET") {
       await handleDashboardData(res);
     } else if (path === "/api/health" && req.method === "GET") {
-      json(res, { status: "ok", port: PORT, timestamp: new Date().toISOString() });
+      if (orchestrator) {
+        const force = url.searchParams.get("force") === "true";
+        const health = await orchestrator.health(force);
+        json(res, health);
+      } else {
+        json(res, { status: "ok", port: PORT, timestamp: new Date().toISOString() });
+      }
     } else if (path === "/api/connect" && req.method === "POST") {
       const body = await readBody(req);
       await handleConnect(res, body);
@@ -595,14 +580,64 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const body = await readBody(req);
       await handleAsk(res, body);
     } else if (path === "/api/poll" && req.method === "GET") {
-      await handlePoll(res);
+      const taskId = url.searchParams.get("task_id");
+      if (taskId && orchestrator) {
+        const task = orchestrator.getTaskStatus(taskId);
+        if (!task) {
+          errorJson(res, `Task ${taskId} not found`, 404);
+        } else {
+          json(res, {
+            task_id: task.id,
+            state: task.state,
+            currentStepIndex: task.currentStepIndex,
+            steps_total: task.steps.length,
+            startedAt: task.startedAt,
+            completedAt: task.completedAt,
+          });
+        }
+      } else {
+        await handlePoll(res);
+      }
     } else if (path === "/api/stop" && req.method === "POST") {
-      await handleStop(res);
+      const body = await readBody(req);
+      const taskId = body.task_id as string | undefined;
+      if (taskId && orchestrator) {
+        const cancelled = orchestrator.cancelTask(taskId);
+        json(res, { task_id: taskId, cancelled });
+      } else {
+        await handleStop(res);
+      }
     } else if (path === "/api/screenshot" && req.method === "GET") {
       await handleScreenshot(res);
     } else if (path === "/api/mode" && req.method === "POST") {
       const body = await readBody(req);
       await handleMode(res, body);
+    } else if (path === "/api/delegate" && req.method === "POST") {
+      if (!orchestrator) {
+        errorJson(res, "Orchestrator not initialized", 503);
+      } else {
+        const body = await readBody(req);
+        const description = body.description as string;
+        if (!description) {
+          errorJson(res, "description is required", 400);
+        } else {
+          const result = await orchestrator.delegate(description, {
+            targetTab: body.target_tab as string | undefined,
+            timeout_ms: body.timeout_ms as number | undefined,
+            async: body.async as boolean | undefined,
+            template: body.template as string | undefined,
+          });
+          json(res, result);
+        }
+      }
+    } else if (path === "/api/monitor" && req.method === "GET") {
+      if (!orchestrator) {
+        errorJson(res, "Orchestrator not initialized", 503);
+      } else {
+        const section = url.searchParams.get("section") as "windows" | "tabs" | "all" | null;
+        const state = await orchestrator.getMonitorState(section ?? undefined);
+        json(res, state);
+      }
     } else if (path === "/api/tab-groups" && req.method === "GET") {
       await handleTabGroupsList(res);
     } else if (path === "/api/tab-groups/tabs" && req.method === "GET") {
@@ -626,22 +661,192 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   }
 });
 
+import { TaskQueue } from "./task-queue.js";
+import { TaskTemplateRegistry } from "./task-templates.js";
+import { ToolRouter } from "./tool-router.js";
+import { HealthChecker } from "./health.js";
+import { MonitorProxy } from "./monitor-proxy.js";
+import { DormancyManager } from "./dormancy.js";
+import { pythonBridge } from "./python-bridge.js";
+import { setDormancyManager } from "./tab-groups.js";
+import type { ToolDescriptor } from "./types.js";
+
+async function executeLocalTool(name: string, params: Record<string, unknown>): Promise<unknown> {
+  switch (name) {
+    case "comet_connect": {
+      const startResult = await cometClient.startComet(9222);
+      const targets = await cometClient.listTargets();
+      const pageTabs = targets.filter((t) => t.type === "page");
+      const perplexityTab = pageTabs.find((t) => t.url?.includes("perplexity.ai"));
+      if (perplexityTab) {
+        await cometClient.connect(perplexityTab.id);
+        return { connected: true, tab: "existing Perplexity tab", tabs: pageTabs.length };
+      }
+      const newTab = await cometClient.newTab("https://www.perplexity.ai/");
+      await new Promise((r) => setTimeout(r, 2000));
+      await cometClient.connect(newTab.id);
+      return { connected: true, tab: "new Perplexity tab", tabs: pageTabs.length + 1 };
+    }
+
+    case "comet_ask": {
+      let prompt = (params.prompt as string) || "";
+      const timeout = (params.timeout as number) || 15000;
+      const newChat = (params.newChat as boolean) || false;
+      if (!prompt.trim()) throw new Error("prompt cannot be empty");
+
+      prompt = prompt.replace(/^[-*•]\s*/gm, "").replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
+
+      if (newChat) {
+        const tab = await cometClient.newTab("https://www.perplexity.ai/");
+        await new Promise((r) => setTimeout(r, 2000));
+        await cometClient.connect(tab.id);
+      }
+      await cometAI.sendPrompt(prompt);
+
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const status = await cometAI.getAgentStatus();
+        if (status.status === "completed" && status.response) {
+          return { response: status.response, status: "completed" };
+        }
+      }
+      const final = await cometAI.getAgentStatus();
+      return { response: final.response || null, status: final.status, steps: final.steps };
+    }
+
+    case "comet_poll": {
+      const status = await cometAI.getAgentStatus();
+      return {
+        status: status.status,
+        response: status.response || null,
+        currentStep: status.currentStep || null,
+        steps: status.steps,
+        browsingUrl: status.agentBrowsingUrl || null,
+      };
+    }
+
+    case "comet_stop": {
+      const stopped = await cometAI.stopAgent();
+      return { stopped };
+    }
+
+    case "comet_screenshot": {
+      const result = await cometClient.screenshot("png");
+      return { data: result.data, format: "png" };
+    }
+
+    case "comet_mode": {
+      const mode = params.mode as string | undefined;
+      if (!mode) {
+        const result = await cometClient.evaluate(`
+          (() => {
+            const modes = ['Search', 'Research', 'Labs', 'Learn'];
+            for (const m of modes) {
+              const btn = document.querySelector('button[aria-label="' + m + '"]');
+              if (btn && btn.getAttribute('data-state') === 'checked') return m.toLowerCase();
+            }
+            return 'search';
+          })()
+        `);
+        return { currentMode: result.result.value };
+      }
+      const modeMap: Record<string, string> = { search: "Search", research: "Research", labs: "Labs", learn: "Learn" };
+      const ariaLabel = modeMap[mode];
+      if (!ariaLabel) throw new Error(`Invalid mode: ${mode}. Use: search, research, labs, learn`);
+
+      const state = cometClient.currentState;
+      if (!state.currentUrl?.includes("perplexity.ai")) {
+        await cometClient.navigate("https://www.perplexity.ai/", true);
+      }
+      await cometClient.evaluate(`
+        (() => {
+          const btn = document.querySelector('button[aria-label="${ariaLabel}"]');
+          if (btn) { btn.click(); return true; }
+          return false;
+        })()
+      `);
+      return { mode, switched: true };
+    }
+
+    case "comet_tab_groups": {
+      const action = params.action as string;
+      switch (action) {
+        case "list": return { groups: await tabGroupsClient.listGroups() };
+        case "list_tabs": return { tabs: await tabGroupsClient.listTabs() };
+        default: return { error: `Tab group action '${action}' not fully wired in localToolHandler yet` };
+      }
+    }
+
+    default:
+      throw new Error(`Local tool not wired: ${name}`);
+  }
+}
+
+async function bootstrapOrchestrator(): Promise<void> {
+  try {
+    const localTools: ToolDescriptor[] = [
+      { name: "comet_connect", qualifiedName: "mcp:comet_connect", server: "comet-mcp", category: "meta", schema: {}, description: "Connect to Comet browser", isCanonical: true },
+      { name: "comet_ask", qualifiedName: "mcp:comet_ask", server: "comet-mcp", category: "ai", schema: {}, description: "Send prompt to Perplexity", isCanonical: true },
+      { name: "comet_poll", qualifiedName: "mcp:comet_poll", server: "comet-mcp", category: "ai", schema: {}, description: "Poll agent status", isCanonical: true },
+      { name: "comet_stop", qualifiedName: "mcp:comet_stop", server: "comet-mcp", category: "ai", schema: {}, description: "Stop current agent", isCanonical: true },
+      { name: "comet_screenshot", qualifiedName: "mcp:comet_screenshot", server: "comet-mcp", category: "monitor", schema: {}, description: "Capture screenshot", isCanonical: true },
+      { name: "comet_mode", qualifiedName: "mcp:comet_mode", server: "comet-mcp", category: "ai", schema: {}, description: "Get/set Perplexity mode", isCanonical: true },
+      { name: "comet_tab_groups", qualifiedName: "mcp:comet_tab_groups", server: "comet-mcp", category: "tab", schema: {}, description: "Manage tab groups", isCanonical: true },
+      { name: "comet_health", qualifiedName: "mcp:comet_health", server: "comet-mcp", category: "monitor", schema: {}, description: "Check infrastructure health", isCanonical: true },
+      { name: "comet_delegate", qualifiedName: "mcp:comet_delegate", server: "comet-mcp", category: "meta", schema: {}, description: "Delegate task to orchestrator", isCanonical: true },
+      { name: "comet_monitor", qualifiedName: "mcp:comet_monitor", server: "comet-mcp", category: "monitor", schema: {}, description: "Get monitor state", isCanonical: true },
+    ];
+
+    const taskQueue = new TaskQueue();
+    const templateRegistry = new TaskTemplateRegistry();
+    const toolRouter = new ToolRouter(localTools, pythonBridge);
+    const dormancyManager = new DormancyManager();
+    const monitorProxy = new MonitorProxy();
+    const healthChecker = new HealthChecker({ dormancyManager, monitorProxy });
+
+    setDormancyManager(dormancyManager);
+
+    const orch = new CometOrchestrator({
+      toolRouter,
+      taskQueue,
+      templateRegistry,
+      healthChecker,
+      monitorProxy,
+      dormancyManager,
+      localToolHandler: async (name: string, params: Record<string, unknown>) => {
+        return executeLocalTool(name, params);
+      },
+    });
+
+    await orch.initialize();
+    setOrchestrator(orch);
+    console.log("Orchestrator initialized successfully");
+  } catch (err) {
+    console.error("Orchestrator initialization failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`Comet Bridge HTTP API listening on port ${PORT}`);
   console.log(`Dashboard: http://localhost:${PORT}/dashboard`);
   console.log(`Health check: http://localhost:${PORT}/api/health`);
   console.log(`\nEndpoints:`);
-  console.log(`  GET  /dashboard        - Live monitoring dashboard`);
-  console.log(`  GET  /api/targets      - Raw CDP targets`);
-  console.log(`  POST /api/connect      - Start Comet & connect`);
-  console.log(`  POST /api/ask          - Send prompt {prompt, newChat?, timeout?}`);
-  console.log(`  GET  /api/poll         - Check agent status`);
-  console.log(`  POST /api/stop         - Stop current agent`);
-  console.log(`  GET  /api/screenshot   - Capture page screenshot`);
-  console.log(`  POST /api/mode         - Get/set Perplexity mode {mode?}`);
+  console.log(`  GET  /dashboard            - Live monitoring dashboard`);
+  console.log(`  GET  /api/targets          - Raw CDP targets`);
+  console.log(`  POST /api/connect          - Start Comet & connect`);
+  console.log(`  POST /api/ask              - Send prompt {prompt, newChat?, timeout?}`);
+  console.log(`  GET  /api/poll             - Check agent status (or ?task_id= for task)`);
+  console.log(`  POST /api/stop             - Stop current agent (or {task_id} to cancel task)`);
+  console.log(`  GET  /api/screenshot       - Capture page screenshot`);
+  console.log(`  POST /api/mode             - Get/set Perplexity mode {mode?}`);
+  console.log(`  POST /api/delegate         - Delegate task to orchestrator`);
+  console.log(`  GET  /api/monitor          - Orchestrator monitor state (?section=)`);
   console.log(`  GET  /api/tab-groups       - List all tab groups`);
   console.log(`  GET  /api/tab-groups/tabs  - List all tabs with group info`);
   console.log(`  POST /api/tab-groups       - Create group {tabIds, title?, color?}`);
   console.log(`  POST /api/tab-groups/update - Update group {groupId, title?, color?, collapsed?}`);
   console.log(`  POST /api/tab-groups/delete - Delete group {groupId}`);
+
+  bootstrapOrchestrator();
 });
