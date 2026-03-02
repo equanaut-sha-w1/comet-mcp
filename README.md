@@ -64,15 +64,74 @@ Claude: [Comet handles the login flow and navigation]
 
 ## Tools
 
+### Core Tools
+
 | Tool | Description |
 |------|-------------|
 | `comet_connect` | Connect to Comet (auto-starts if needed) |
 | `comet_ask` | Send a task and wait for response |
-| `comet_poll` | Check progress on long-running tasks |
-| `comet_stop` | Stop current task |
+| `comet_poll` | Check progress on long-running tasks. Pass `task_id` for task-specific polling |
+| `comet_stop` | Stop current task. Pass `task_id` to cancel a specific delegated task |
 | `comet_screenshot` | Capture current page |
 | `comet_mode` | Switch modes: search, research, labs, learn |
 | `comet_tab_groups` | Manage Chrome tab groups (list, create, update, delete) |
+
+### Orchestration Tools (New)
+
+| Tool | Description |
+|------|-------------|
+| `comet_health` | Unified health check across all 4 infrastructure components (browser, comet-mcp, comet-monitor, extension). Returns structured report with per-component status, latency, and overall health |
+| `comet_delegate` | High-level task delegation with automatic tool routing. Describe a task in natural language and the orchestrator selects the right tools via 11 built-in templates (research, navigate, screenshot, Shortwave, DOM interaction). Returns structured results with `status`, `payload`, `tools_invoked`, and timing |
+| `comet_monitor` | Proxy to comet-monitor Flask API. Returns browser window geometry, tab inventory, and display information. Gracefully reports unavailability when monitor is down |
+
+### Extended Tool Capabilities
+
+**`comet_poll` with `task_id`**: When called with a `task_id` from a `comet_delegate` response, returns task-specific progress including `task_state` (pending/running/completed/failed/cancelled), `elapsed_ms`, and step completion counts. Without `task_id`, existing Perplexity polling behavior is preserved.
+
+**`comet_stop` with `task_id`**: When called with a `task_id`, cancels the specific delegated task. Without `task_id`, existing Perplexity stop behavior is preserved.
+
+## Orchestration Architecture
+
+The orchestration layer routes high-level task descriptions to the correct tools automatically:
+
+```
+User: "Research D&O insurance requirements"
+  → Orchestrator matches 'research' template
+  → Executes: comet_mode("research") → comet_ask(prompt) → comet_poll(loop)
+  → Returns structured TaskResult
+
+User: "Navigate to example.com and extract the title"
+  → Orchestrator matches 'navigate-extract' template
+  → Executes: comet_navigate(url) → comet_get_content()
+  → Returns structured TaskResult
+
+User: "Something unrecognized"
+  → No template match
+  → Returns DelegateEnrichmentResponse with available templates,
+    tool inventory, and server health for the caller to decompose
+```
+
+### Built-in Task Templates (11)
+
+| Template | Trigger Keywords | Tools Used |
+|----------|-----------------|------------|
+| `research` | research, deep dive, analyze | comet_mode → comet_ask → comet_poll |
+| `search` | search, look up, quick, what is | comet_mode → comet_ask → comet_poll |
+| `navigate` | URL + go to, open, navigate | comet_navigate |
+| `navigate-extract` | URL + extract, scrape | comet_navigate → comet_get_content |
+| `research-extract` | research + then extract | comet_mode → comet_ask → comet_poll → comet_get_content |
+| `shortwave-query` | shortwave, ask shortwave | connect → navigate → set_mode → query |
+| `shortwave-triage` | shortwave triage, email triage | connect → navigate → mode → /analyze prompt |
+| `shortwave-saved-prompt` | shortwave /analyze, /tasks | navigate → mode → saved prompts |
+| `dom-interact` | click, type, fill, scroll | DOM action tools |
+| `screenshot` | screenshot, capture | comet_screenshot |
+
+### Key Features
+
+- **Per-tab task queue**: Tasks targeting the same browser tab are queued; tasks on different tabs run independently
+- **Extension dormancy auto-recovery**: MV3 service workers that go dormant are automatically woken via CDP before tab group operations
+- **Structured results**: All delegated tasks return typed `TaskResult` objects with status, payload, duration, and tools invoked
+- **Routing fallback**: Unrecognized tasks return enrichment metadata (available templates, tool inventory, server health) so the calling LLM can decompose them
 
 ## Tab Groups
 
@@ -114,16 +173,38 @@ npm run build && npm run http
 # Starts on http://localhost:3456
 ```
 
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/health` | Unified health check (`?force=true` to bypass cache) |
+| `POST` | `/api/connect` | Start Comet & connect to Perplexity tab |
+| `POST` | `/api/ask` | Send prompt `{prompt, newChat?, timeout?}` |
+| `GET` | `/api/poll` | Check Perplexity status (`?task_id=` for delegated task) |
+| `POST` | `/api/stop` | Stop agent (`{task_id}` to cancel specific task) |
+| `GET` | `/api/screenshot` | Capture page screenshot |
+| `POST` | `/api/mode` | Get/set Perplexity mode `{mode?}` |
+| `POST` | `/api/delegate` | Delegate task `{description, template?, timeout_ms?}` |
+| `GET` | `/api/monitor` | Monitor state (`?section=windows\|tabs\|all`) |
+| `GET` | `/api/tab-groups` | List all tab groups |
+| `GET` | `/api/tab-groups/tabs` | List all tabs with group info |
+| `POST` | `/api/tab-groups` | Create group `{tabIds, title?, color?}` |
+| `POST` | `/api/tab-groups/update` | Update group `{groupId, title?, color?, collapsed?}` |
+| `POST` | `/api/tab-groups/delete` | Delete group `{groupId}` |
+| `GET` | `/dashboard` | Live monitoring dashboard |
+
 See [COWORK-BRIDGE.md](COWORK-BRIDGE.md) for full endpoint documentation.
 
 ## How It Works
 
 ```
-Claude Code  →  MCP Server  →  CDP  →  Comet Browser  →  Perplexity AI
-   (reasoning)     (bridge)                              (web browsing)
+Claude Code  →  MCP Server  →  Orchestrator  →  CDP  →  Comet Browser  →  Perplexity AI
+   (reasoning)    (bridge)     (routing +       (wire)                    (web browsing)
+                               templates +
+                               task queue)
 ```
 
-Claude sends high-level goals ("research X", "log into Y"). Comet figures out the clicks, scrolls, and searches. Results flow back to Claude.
+Claude sends high-level goals ("research X", "log into Y"). The orchestrator routes them through task templates, manages per-tab concurrency, and handles extension dormancy. Comet figures out the clicks, scrolls, and searches. Structured results flow back to Claude.
 
 ## Requirements
 

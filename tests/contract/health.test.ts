@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 
+const API_BASE = process.env.COMET_API_URL || "http://127.0.0.1:3456";
+
 interface HealthInput {
   force?: boolean;
 }
@@ -16,12 +18,16 @@ interface ComponentHealth {
 interface HealthOutput {
   overall: "healthy" | "degraded" | "down";
   components: Record<string, ComponentHealth>;
-  checked_at: string;
+  checkedAt: number;
   duration_ms: number;
 }
 
 async function callHealthTool(input: HealthInput): Promise<HealthOutput> {
-  throw new Error("not implemented");
+  const url = new URL("/api/health", API_BASE);
+  if (input.force) url.searchParams.set("force", "true");
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json() as Promise<HealthOutput>;
 }
 
 describe("comet_health contract", () => {

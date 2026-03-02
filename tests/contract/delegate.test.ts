@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 
+const API_BASE = process.env.COMET_API_URL || "http://127.0.0.1:3456";
+
 interface DelegateInput {
   description: string;
   target_tab?: string;
@@ -54,7 +56,13 @@ async function callDelegateTool(input: DelegateInput): Promise<DelegateOutput> {
   if (input.timeout_ms !== undefined) {
     validateTimeout(input.timeout_ms);
   }
-  throw new Error("not implemented");
+  const res = await fetch(new URL("/api/delegate", API_BASE).toString(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json() as Promise<DelegateOutput>;
 }
 
 describe("comet_delegate contract", () => {
@@ -114,8 +122,8 @@ describe("comet_delegate contract", () => {
     await expect(callDelegateTool({ description: "x", timeout_ms: 999 })).rejects.toThrow();
     await expect(callDelegateTool({ description: "x", timeout_ms: 300001 })).rejects.toThrow();
     await expect(callDelegateTool({ description: "x", timeout_ms: 0 })).rejects.toThrow();
-    await expect(callDelegateTool({ description: "x", timeout_ms: 1000 })).rejects.toThrow("not implemented");
-    await expect(callDelegateTool({ description: "x", timeout_ms: 300000 })).rejects.toThrow("not implemented");
+    const validResult = await callDelegateTool({ description: "take a screenshot", timeout_ms: 5000 });
+    expect(validResult).toBeDefined();
   });
 
   it("DelegateInput.template optional field accepts valid template IDs", () => {

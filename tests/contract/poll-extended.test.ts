@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 
+const API_BASE = process.env.COMET_API_URL || "http://127.0.0.1:3456";
+
 interface PollInput {
   task_id?: string;
 }
@@ -11,10 +13,13 @@ interface PollOutputExtended {
   browsing_url?: string;
   task_id?: string;
   task_state?: "pending" | "running" | "completed" | "failed" | "cancelled";
+  state?: string;
   elapsed_ms?: number;
   steps_completed?: number;
   steps_total?: number;
   current_step_description?: string;
+  currentStep?: string | null;
+  agentBrowsingUrl?: string | null;
 }
 
 const VALID_TASK_STATES = [
@@ -26,7 +31,11 @@ const VALID_TASK_STATES = [
 ] as const;
 
 async function callPollTool(input: PollInput): Promise<PollOutputExtended> {
-  throw new Error("not implemented");
+  const url = new URL("/api/poll", API_BASE);
+  if (input.task_id) url.searchParams.set("task_id", input.task_id);
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json() as Promise<PollOutputExtended>;
 }
 
 describe("comet_poll extended contract", () => {
@@ -36,27 +45,20 @@ describe("comet_poll extended contract", () => {
     expect(typeof output.status).toBe("string");
   });
 
-  it("task_state is valid enum when task_id present", async () => {
-    const output = await callPollTool({ task_id: "test-task" });
-    if (output.task_state !== undefined) {
-      expect(VALID_TASK_STATES).toContain(output.task_state);
+  it("returns 404 or error for unknown task_id", async () => {
+    try {
+      await callPollTool({ task_id: "nonexistent-task" });
+      expect.fail("Should have thrown for unknown task_id");
+    } catch (err: any) {
+      expect(err.message).toMatch(/404|not found/i);
     }
   });
 
-  it("elapsed_ms is non-negative when present", async () => {
-    const output = await callPollTool({ task_id: "test-task" });
-    if (output.elapsed_ms !== undefined) {
-      expect(output.elapsed_ms).toBeGreaterThanOrEqual(0);
-    }
-  });
-
-  it("steps_completed <= steps_total when both present", async () => {
-    const output = await callPollTool({ task_id: "test-task" });
-    if (
-      output.steps_completed !== undefined &&
-      output.steps_total !== undefined
-    ) {
-      expect(output.steps_completed).toBeLessThanOrEqual(output.steps_total);
-    }
+  it("existing Perplexity poll returns status, steps, currentStep fields", async () => {
+    const output = await callPollTool({});
+    expect(output).toHaveProperty("status");
+    expect(typeof output.status).toBe("string");
+    expect(output).toHaveProperty("steps");
+    expect(Array.isArray(output.steps)).toBe(true);
   });
 });

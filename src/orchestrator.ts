@@ -220,7 +220,7 @@ export class CometOrchestrator implements ICometOrchestrator {
       };
     }
 
-    return this.executeTask(task);
+    return this.executeTask(task, template);
   }
 
   getMonitorState(section?: "windows" | "tabs" | "all"): Promise<MonitorState> {
@@ -288,18 +288,20 @@ export class CometOrchestrator implements ICometOrchestrator {
     };
   }
 
-  private async executeTask(task: TaskDelegation): Promise<TaskResult> {
+  private async executeTask(task: TaskDelegation, template: TaskTemplate): Promise<TaskResult> {
     task.state = "running";
     task.startedAt = Date.now();
 
     const toolsInvoked: string[] = [];
     let lastResult: unknown = null;
     const deadline = task.startedAt + task.timeout_ms;
+    const tabKey = task.targetTabId ?? "__global__";
 
     for (let i = 0; i < task.steps.length; i++) {
       if (Date.now() >= deadline) {
-        task.state = "completed";
+        task.state = "failed";
         task.completedAt = Date.now();
+        this.taskQueue.completeActive(tabKey);
         return {
           status: "partial",
           payload: lastResult,
@@ -319,14 +321,13 @@ export class CometOrchestrator implements ICometOrchestrator {
       const step = task.steps[i];
       task.currentStepIndex = i;
       step.status = "running";
+      const stepStart = Date.now();
 
       try {
         if (TAB_GROUP_TOOLS.has(step.toolName)) {
           const alive = await this.dormancyManager.isExtensionAlive();
           if (!alive) await this.dormancyManager.wake();
         }
-
-        const stepStart = Date.now();
         let result: unknown;
 
         if (step.server === "comet-mcp") {
@@ -351,11 +352,10 @@ export class CometOrchestrator implements ICometOrchestrator {
         toolsInvoked.push(step.toolName);
       } catch (err) {
         step.status = "failed";
-        step.duration_ms = step.duration_ms ?? Date.now() - (task.startedAt + (step.duration_ms ?? 0));
+        step.duration_ms = Date.now() - stepStart;
         step.result = err instanceof Error ? err.message : String(err);
 
-        const isOptional = this.isOptionalStep(task, i);
-        if (isOptional) {
+        if (this.isOptionalStep(template, i)) {
           step.status = "skipped";
           toolsInvoked.push(step.toolName);
           continue;
@@ -363,6 +363,7 @@ export class CometOrchestrator implements ICometOrchestrator {
 
         task.state = "failed";
         task.completedAt = Date.now();
+        this.taskQueue.completeActive(tabKey);
         return {
           status: "failure",
           payload: lastResult,
@@ -382,8 +383,6 @@ export class CometOrchestrator implements ICometOrchestrator {
 
     task.state = "completed";
     task.completedAt = Date.now();
-
-    const tabKey = task.targetTabId ?? "__global__";
     this.taskQueue.completeActive(tabKey);
 
     return {
@@ -396,9 +395,7 @@ export class CometOrchestrator implements ICometOrchestrator {
     };
   }
 
-  private isOptionalStep(task: TaskDelegation, stepIndex: number): boolean {
-    const template = this.templateRegistry.match(task.description);
-    if (!template) return false;
+  private isOptionalStep(template: TaskTemplate, stepIndex: number): boolean {
     return template.steps[stepIndex]?.optional === true;
   }
 }

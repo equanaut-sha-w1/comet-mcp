@@ -8,9 +8,9 @@
 //   Cowork VM -> Claude-in-Chrome MCP -> Chrome fetch('localhost:3456') -> this server -> CDP -> Comet
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { platform } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { cometClient } from "./cdp-client.js";
@@ -47,13 +47,9 @@ interface WindowGeometry {
 let geometryCache: { data: WindowGeometry[]; ts: number } = { data: [], ts: 0 };
 const GEOMETRY_CACHE_MS = 5000;
 
-function getWindowGeometry(): WindowGeometry[] {
-  if (platform() !== "darwin") return [];
-
-  const now = Date.now();
-  if (now - geometryCache.ts < GEOMETRY_CACHE_MS) return geometryCache.data;
-
-  const script = `
+// Write AppleScript to a temp file once (avoids shell escaping issues)
+const APPLESCRIPT_PATH = join(tmpdir(), "comet-window-geometry.scpt");
+const APPLESCRIPT_CONTENT = `
 set output to "["
 tell application "System Events"
   if exists process "Comet" then
@@ -64,9 +60,18 @@ tell application "System Events"
         set winPos to position of w
         set winSize to size of w
         set winTitle to name of w
+        -- Escape quotes in title for JSON safety
+        set cleanTitle to ""
+        repeat with c in characters of winTitle
+          if c as text is "\\"" then
+            set cleanTitle to cleanTitle & "\\\\\\""
+          else
+            set cleanTitle to cleanTitle & (c as text)
+          end if
+        end repeat
         if i > 1 then set output to output & ","
         set output to output & "{\\"index\\":" & i
-        set output to output & ",\\"title\\":\\"" & winTitle & "\\""
+        set output to output & ",\\"title\\":\\"" & cleanTitle & "\\""
         set output to output & ",\\"x\\":" & (item 1 of winPos)
         set output to output & ",\\"y\\":" & (item 2 of winPos)
         set output to output & ",\\"w\\":" & (item 1 of winSize)
@@ -76,10 +81,29 @@ tell application "System Events"
     end tell
   end if
 end tell
-return output & "]"`;
+return output & "]"
+`.trim();
+
+let applescriptWritten = false;
+
+function getWindowGeometry(): WindowGeometry[] {
+  if (platform() !== "darwin") return [];
+
+  const now = Date.now();
+  if (now - geometryCache.ts < GEOMETRY_CACHE_MS) return geometryCache.data;
+
+  // Write script file once
+  if (!applescriptWritten) {
+    try {
+      writeFileSync(APPLESCRIPT_PATH, APPLESCRIPT_CONTENT, "utf-8");
+      applescriptWritten = true;
+    } catch {
+      return geometryCache.data;
+    }
+  }
 
   try {
-    const raw = execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, {
+    const raw = execSync(`osascript "${APPLESCRIPT_PATH}"`, {
       timeout: 5000,
       encoding: "utf-8",
     }).trim();

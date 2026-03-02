@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 
+const API_BASE = process.env.COMET_API_URL || "http://127.0.0.1:3456";
+
 interface MonitorInput {
   section?: "windows" | "tabs" | "all";
 }
@@ -24,7 +26,11 @@ interface MonitorOutput {
 }
 
 async function callMonitorTool(input: MonitorInput): Promise<MonitorOutput> {
-  throw new Error("not implemented");
+  const url = new URL("/api/monitor", API_BASE);
+  if (input.section) url.searchParams.set("section", input.section);
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json() as Promise<MonitorOutput>;
 }
 
 describe("comet_monitor contract", () => {
